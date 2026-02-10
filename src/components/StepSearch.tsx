@@ -45,6 +45,8 @@ export function StepSearch({ dispatch, onNext }: StepSearchProps) {
         if (parsed) {
           const repo = await getRepoByFullName(`${parsed.owner}/${parsed.repo}`);
           setResults([repo]);
+          // Store subpath for auto-selection on click
+          (repo as any)._subpath = parsed.subpath;
         } else {
           const repos = await searchRepos(value);
           setResults(repos);
@@ -58,8 +60,8 @@ export function StepSearch({ dispatch, onNext }: StepSearchProps) {
     }, 400);
   };
 
-  const selectRepo = (repo: GitHubRepo) => {
-    dispatch({ type: "SET_REPO", repo });
+  const selectRepo = (repo: GitHubRepo, subpath?: string) => {
+    dispatch({ type: "SET_REPO", repo, subpath });
     setShowResults(false);
     onNext();
   };
@@ -98,7 +100,7 @@ export function StepSearch({ dispatch, onNext }: StepSearchProps) {
             {results.map((repo) => (
               <button
                 key={repo.id}
-                onClick={() => selectRepo(repo)}
+                onClick={() => selectRepo(repo, (repo as any)._subpath)}
                 className="w-full flex items-center gap-3 px-4 py-3 hover:bg-accent/50 transition-colors text-left group"
               >
                 <img

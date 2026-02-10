@@ -20,6 +20,7 @@ export interface HelmChart {
 export interface WizardState {
   step: number;
   repo: GitHubRepo | null;
+  repoSubpath?: string;
   charts: HelmChart[];
   selectedChart: HelmChart | null;
   valuesYaml: string;
@@ -28,7 +29,7 @@ export interface WizardState {
 
 export type WizardAction =
   | { type: "SET_STEP"; step: number }
-  | { type: "SET_REPO"; repo: GitHubRepo }
+  | { type: "SET_REPO"; repo: GitHubRepo; subpath?: string }
   | { type: "SET_CHARTS"; charts: HelmChart[] }
   | { type: "SELECT_CHART"; chart: HelmChart }
   | { type: "SET_VALUES"; yaml: string }
