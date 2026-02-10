@@ -101,6 +101,21 @@ export function StepValuesEditor({ repo, chart, valuesYaml, dispatch, onNext, on
             <Button
               variant="outline"
               size="sm"
+              onClick={() => {
+                const editor = editorRef.current;
+                if (!editor) return;
+                const model = editor.getModel();
+                if (!model) return;
+                editor.setSelection(model.getFullModelRange());
+                editor.focus();
+              }}
+              className="text-xs gap-1.5"
+            >
+              Select All
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={!hasSelection}
               onClick={makeInput}
               className="text-xs gap-1.5"
