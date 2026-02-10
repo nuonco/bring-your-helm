@@ -15,7 +15,7 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
     case "SET_STEP":
       return { ...state, step: action.step };
     case "SET_REPO":
-      return { ...state, repo: action.repo };
+      return { ...state, repo: action.repo, repoSubpath: action.subpath };
     case "SET_CHARTS":
       return { ...state, charts: action.charts };
     case "SELECT_CHART":

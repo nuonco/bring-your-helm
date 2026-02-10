@@ -19,6 +19,7 @@ const Index = () => {
       {state.step === 1 && state.repo && (
         <StepHelmDetection
           repo={state.repo}
+          subpath={state.repoSubpath}
           dispatch={dispatch}
           onNext={() => dispatch({ type: "SET_STEP", step: 2 })}
           onBack={() => dispatch({ type: "SET_STEP", step: 0 })}

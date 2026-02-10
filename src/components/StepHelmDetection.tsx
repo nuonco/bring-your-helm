@@ -7,12 +7,13 @@ import { cn } from "@/lib/utils";
 
 interface StepHelmDetectionProps {
   repo: GitHubRepo;
+  subpath?: string;
   dispatch: React.Dispatch<WizardAction>;
   onNext: () => void;
   onBack: () => void;
 }
 
-export function StepHelmDetection({ repo, dispatch, onNext, onBack }: StepHelmDetectionProps) {
+export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: StepHelmDetectionProps) {
   const [loading, setLoading] = useState(true);
   const [charts, setCharts] = useState<HelmChart[]>([]);
   const [selected, setSelected] = useState<HelmChart | null>(null);
@@ -22,7 +23,7 @@ export function StepHelmDetection({ repo, dispatch, onNext, onBack }: StepHelmDe
     const [owner, name] = repo.full_name.split("/");
     setLoading(true);
     setError(null);
-    findHelmCharts(owner, name)
+    findHelmCharts(owner, name, subpath)
       .then((found) => {
         setCharts(found);
         dispatch({ type: "SET_CHARTS", charts: found });
