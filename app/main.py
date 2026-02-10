@@ -31,8 +31,10 @@ async def analyze(
         chart = await fetch_chart(repo_url)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
-    except RuntimeError as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Failed to fetch chart from GitHub: {e}"}, status_code=502
+        )
 
     chart_name = "unknown"
     for line in chart.chart_yaml.splitlines():
