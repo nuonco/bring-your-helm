@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
-import Editor from "@monaco-editor/react";
+import { useEffect, useState, useRef } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { getFileContent } from "@/lib/github";
 import { NUON_VARIABLES } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, WizardAction } from "@/lib/types";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, ArrowRight, Loader2, Copy, Check } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { ArrowLeft, ArrowRight, Loader2, Copy, Check, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface StepValuesEditorProps {
@@ -19,6 +20,39 @@ interface StepValuesEditorProps {
 export function StepValuesEditor({ repo, chart, valuesYaml, dispatch, onNext, onBack }: StepValuesEditorProps) {
   const [loading, setLoading] = useState(!valuesYaml);
   const [copiedVar, setCopiedVar] = useState<string | null>(null);
+  const [showInputDialog, setShowInputDialog] = useState(false);
+  const [inputName, setInputName] = useState("");
+  const [hasSelection, setHasSelection] = useState(false);
+  const editorRef = useRef<any>(null);
+
+  const handleEditorMount: OnMount = (editor) => {
+    editorRef.current = editor;
+    editor.onDidChangeCursorSelection((e) => {
+      const selection = editor.getSelection();
+      setHasSelection(selection ? !selection.isEmpty() : false);
+    });
+  };
+
+  const makeInput = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = editor.getSelection();
+    if (!selection || selection.isEmpty()) return;
+    setInputName("");
+    setShowInputDialog(true);
+  };
+
+  const confirmMakeInput = () => {
+    const editor = editorRef.current;
+    if (!editor || !inputName.trim()) return;
+    const selection = editor.getSelection();
+    if (!selection) return;
+    const template = `{{.nuon.install.inputs.${inputName.trim()}}}`;
+    editor.executeEdits("make-input", [{ range: selection, text: template }]);
+    dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
+    setShowInputDialog(false);
+    setInputName("");
+  };
 
   useEffect(() => {
     if (valuesYaml) return;
@@ -62,22 +96,61 @@ export function StepValuesEditor({ repo, chart, valuesYaml, dispatch, onNext, on
 
       <div className="flex gap-4 h-[500px]">
         {/* Editor */}
-        <div className="flex-1 rounded-lg border border-border overflow-hidden">
-          <Editor
-            defaultLanguage="yaml"
-            value={valuesYaml}
-            onChange={(value) => dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })}
-            theme="vs-dark"
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              fontFamily: "'JetBrains Mono', monospace",
-              lineNumbers: "on",
-              scrollBeyondLastLine: false,
-              padding: { top: 12 },
-              wordWrap: "on",
-            }}
-          />
+        <div className="flex-1 flex flex-col rounded-lg border border-border overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!hasSelection}
+              onClick={makeInput}
+              className="text-xs gap-1.5"
+            >
+              <Zap className="w-3 h-3" />
+              Make Input
+            </Button>
+            {hasSelection && (
+              <span className="text-xs text-muted-foreground">Select a value, then click to convert it to a Nuon input</span>
+            )}
+          </div>
+
+          {showInputDialog && (
+            <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-accent/30">
+              <span className="text-xs text-foreground whitespace-nowrap">Input name:</span>
+              <Input
+                value={inputName}
+                onChange={(e) => setInputName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && confirmMakeInput()}
+                placeholder="e.g. api_key"
+                className="h-7 text-xs font-mono flex-1"
+                autoFocus
+              />
+              <Button size="sm" className="h-7 text-xs" onClick={confirmMakeInput} disabled={!inputName.trim()}>
+                Apply
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setShowInputDialog(false)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+
+          <div className="flex-1">
+            <Editor
+              defaultLanguage="yaml"
+              value={valuesYaml}
+              onChange={(value) => dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })}
+              theme="vs-dark"
+              onMount={handleEditorMount}
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                fontFamily: "'JetBrains Mono', monospace",
+                lineNumbers: "on",
+                scrollBeyondLastLine: false,
+                padding: { top: 12 },
+                wordWrap: "on",
+              }}
+            />
+          </div>
         </div>
 
         {/* Variable reference panel */}
