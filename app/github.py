@@ -69,11 +69,50 @@ def _parse_chart_yaml(content: str) -> dict[str, str]:
 
 
 async def search_repos(query: str) -> list[dict]:
-    """Search GitHub repositories. Returns list of {full_name, description, stars, avatar_url, default_branch}."""
+    """Search GitHub for repos containing Helm charts.
+
+    Uses code search with filename:Chart.yaml so every result is guaranteed
+    to contain at least one Helm chart. Falls back to repo search with a
+    topic:helm-chart qualifier if code search returns nothing.
+    """
     async with httpx.AsyncClient(timeout=15.0) as client:
+        # Primary: code search for Chart.yaml files matching the query
+        resp = await client.get(
+            "https://api.github.com/search/code",
+            params={"q": f"{query} filename:Chart.yaml", "per_page": 20},
+            headers=_gh_headers(),
+        )
+        if resp.status_code == 403:
+            raise RuntimeError("GitHub API rate limit exceeded. Try again shortly.")
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Deduplicate by repo (code search returns one result per file)
+        seen: set[str] = set()
+        results: list[dict] = []
+        for item in data.get("items", []):
+            repo = item.get("repository", {})
+            name = repo.get("full_name", "")
+            if name in seen:
+                continue
+            seen.add(name)
+            results.append({
+                "full_name": name,
+                "description": repo.get("description") or "",
+                "stars": repo.get("stargazers_count", 0),
+                "avatar_url": repo.get("owner", {}).get("avatar_url", ""),
+                "default_branch": repo.get("default_branch", "main"),
+            })
+            if len(results) >= 8:
+                break
+
+        if results:
+            return results
+
+        # Fallback: repo search with helm-chart topic
         resp = await client.get(
             "https://api.github.com/search/repositories",
-            params={"q": query, "sort": "stars", "per_page": 8},
+            params={"q": f"{query} topic:helm-chart", "sort": "stars", "per_page": 8},
             headers=_gh_headers(),
         )
         if resp.status_code == 403:
