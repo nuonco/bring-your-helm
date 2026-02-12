@@ -32,3 +32,49 @@
 pre code {
     tab-size: 2;
 }
+
+/* Wizard step fade-in animation */
+.wizard-step-enter {
+    animation: wizardFadeIn 0.3s ease-out;
+}
+
+@keyframes wizardFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Search dropdown animation */
+#search-dropdown:not(.hidden) {
+    animation: dropdownSlide 0.15s ease-out;
+}
+
+@keyframes dropdownSlide {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Chart card selection glow */
+.chart-card-selected {
+    border-color: #16a34a !important;
+    box-shadow: 0 0 0 1px #16a34a, 0 0 12px rgba(22, 163, 74, 0.15);
+}
+
+/* Line clamp for chart descriptions */
+.line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
