@@ -190,8 +190,8 @@
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
             </svg>
-            <p id="loading-text" class="text-gray-400 text-lg mb-1">Analyzing your Helm chart...</p>
-            <p class="text-gray-600 text-sm">Fetching chart files from GitHub and generating your Nuon configuration. This usually takes 15-30 seconds.</p>
+            <p id="loading-text" class="text-gray-400 text-lg mb-1 transition-opacity duration-300">Analyzing your Helm chart...</p>
+            <p id="loading-detail" class="text-gray-600 text-sm transition-opacity duration-300">This usually takes 15-30 seconds.</p>
         </div>
     </div>
 
@@ -695,6 +695,60 @@ function getAdvancedGuidance() {
     return parts.join(' ');
 }
 
+// ═══════════ Progress Messages ═══════════
+function getProgressSteps(chartName) {
+    return [
+        { text: 'Fetching Chart.yaml and values.yaml...', detail: 'Downloading chart files from GitHub' },
+        { text: 'Analyzing chart structure...', detail: 'Reading chart metadata and dependencies' },
+        { text: 'Classifying values into customer inputs...', detail: 'Determining which values should be configurable per-install' },
+        { text: 'Generating metadata.toml...', detail: 'Setting up app identity and description' },
+        { text: 'Generating inputs.toml...', detail: 'Defining customer-facing configuration inputs' },
+        { text: 'Creating component configuration...', detail: 'Wiring up the Helm chart component for ' + chartName },
+        { text: 'Generating templated values file...', detail: 'Mapping Nuon inputs to Helm values' },
+        { text: 'Checking for infrastructure dependencies...', detail: 'Looking for databases, caches, certificates, etc.' },
+        { text: 'Generating infrastructure components...', detail: 'Adding Terraform modules for detected dependencies' },
+        { text: 'Finalizing configuration...', detail: 'Almost done — assembling all config files' },
+    ];
+}
+
+let _progressInterval = null;
+function startProgress(chartName) {
+    const steps = getProgressSteps(chartName || 'your chart');
+    let idx = 0;
+    const textEl = document.getElementById('loading-text');
+    const detailEl = document.getElementById('loading-detail');
+
+    // Show first step immediately
+    textEl.textContent = steps[0].text;
+    detailEl.textContent = steps[0].detail;
+
+    _progressInterval = setInterval(function() {
+        idx++;
+        if (idx >= steps.length) {
+            // Stay on last message
+            clearInterval(_progressInterval);
+            _progressInterval = null;
+            return;
+        }
+        // Fade transition
+        textEl.style.opacity = '0';
+        detailEl.style.opacity = '0';
+        setTimeout(function() {
+            textEl.textContent = steps[idx].text;
+            detailEl.textContent = steps[idx].detail;
+            textEl.style.opacity = '1';
+            detailEl.style.opacity = '1';
+        }, 200);
+    }, 3000);
+}
+
+function stopProgress() {
+    if (_progressInterval) {
+        clearInterval(_progressInterval);
+        _progressInterval = null;
+    }
+}
+
 // ═══════════ Form Submit ═══════════
 document.getElementById('analyze-form').addEventListener('submit', async function(e) {
     e.preventDefault();
@@ -724,6 +778,10 @@ document.getElementById('analyze-form').addEventListener('submit', async functio
     errorOutput.classList.add('hidden');
     howItWorks.classList.add('hidden');
     cachedBadge.classList.add('hidden');
+
+    // Start progress messages
+    const chartName = state.selectedChart ? state.selectedChart.name : '';
+    startProgress(chartName);
 
     // Append advanced guidance to the guidance field
     const guidanceEl = document.getElementById('guidance');
@@ -766,6 +824,7 @@ document.getElementById('analyze-form').addEventListener('submit', async functio
         errorText.textContent = 'Connection failed: ' + err.message;
         errorOutput.classList.remove('hidden');
     } finally {
+        stopProgress();
         loading.classList.add('hidden');
         submitBtn.disabled = false;
         submitBtn.textContent = 'Generate Nuon Config';
