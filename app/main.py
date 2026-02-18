@@ -3,28 +3,26 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.claude import generate_config, parse_files
-from app.config import ANTHROPIC_API_KEY, STATIC_DIR, TEMPLATES_DIR
+from app.config import STATIC_DIR, TEMPLATES_DIR
+from app.generator import generate_config
 from app.github import (
     discover_charts,
     fetch_chart,
+    fetch_chart_from_artifacthub,
     is_github_url,
     parse_github_url,
     search_artifacthub,
     search_repos,
 )
 
-app = FastAPI(title="Bring Your Helm", version="0.2.0")
+app = FastAPI(title="Bring Your Helm", version="0.3.0")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "has_api_key": bool(ANTHROPIC_API_KEY),
-    })
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/api/search")
@@ -86,58 +84,74 @@ async def api_search_artifacthub(q: str = Query("")):
 
 @app.post("/analyze")
 async def analyze(
-    repo_url: str = Form(...),
-    guidance: str = Form(""),
+    repo_url: str = Form(""),
+    ah_repo: str = Form(""),
+    ah_package: str = Form(""),
+    cloud_provider: str = Form(""),
+    infra_mode: str = Form(""),
+    namespace: str = Form(""),
+    config_repo: str = Form(""),
+    infra_deps: str = Form(""),
 ):
-    """Fetch chart from GitHub, generate Nuon config via Claude, return JSON."""
-    # Import cache here to avoid circular imports
+    """Fetch chart and generate Nuon config deterministically.
+
+    Accepts either a GitHub URL (repo_url) or ArtifactHub coordinates
+    (ah_repo + ah_package).
+    """
     from app.cache import get_cached, set_cached
 
-    # Phase 1: Fetch chart files
-    try:
-        chart = await fetch_chart(repo_url)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to fetch chart from GitHub: {e}"}, status_code=502
-        )
+    # Phase 1: Fetch chart files from GitHub or ArtifactHub
+    if ah_repo and ah_package:
+        try:
+            chart = await fetch_chart_from_artifacthub(ah_repo, ah_package)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to fetch chart from ArtifactHub: {e}"}, status_code=502
+            )
+    elif repo_url:
+        try:
+            chart = await fetch_chart(repo_url)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except Exception as e:
+            return JSONResponse(
+                {"error": f"Failed to fetch chart from GitHub: {e}"}, status_code=502
+            )
+    else:
+        return JSONResponse({"error": "No chart source provided."}, status_code=400)
 
-    chart_name = "unknown"
-    for line in chart.chart_yaml.splitlines():
-        if line.startswith("name:"):
-            chart_name = line.split(":", 1)[1].strip().strip('"').strip("'")
-            break
+    chart_name = chart.chart_name or "unknown"
 
-    # Check cache (only when guidance is empty)
-    cache_key = f"{chart.org}/{chart.repo}@{chart.branch}:{chart.directory}"
-    if not guidance:
-        cached = get_cached(cache_key)
-        if cached is not None:
-            return JSONResponse({
-                "chart_name": chart_name,
-                "files": cached,
-                "cached": True,
-            })
+    # Parse infra_deps from comma-separated string
+    selected_deps = [d.strip() for d in infra_deps.split(",") if d.strip()]
 
-    # Phase 2: Generate config via Claude
-    try:
-        response_text = await generate_config(chart, guidance)
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"Configuration generation failed: {e}"}, status_code=502
-        )
+    # Cache key includes source + user selections
+    source_key = f"ah:{ah_repo}/{ah_package}" if ah_repo else f"{chart.org}/{chart.repo}@{chart.branch}:{chart.directory}"
+    cache_key = (
+        f"{source_key}"
+        f"|{cloud_provider}|{infra_mode}|{namespace}|{','.join(sorted(selected_deps))}"
+    )
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return JSONResponse({
+            "chart_name": chart_name,
+            "files": cached,
+            "cached": True,
+        })
 
-    # Phase 3: Parse into files
-    files = parse_files(response_text)
-    files_data = [
-        {"filename": f.filename, "language": f.language, "content": f.content}
-        for f in files
-    ]
+    # Phase 2: Generate config deterministically
+    files_data = generate_config(
+        chart=chart,
+        cloud_provider=cloud_provider,
+        infra_mode=infra_mode,
+        namespace=namespace,
+        config_repo=config_repo.strip(),
+        infra_deps=selected_deps,
+    )
 
-    # Cache result if no custom guidance
-    if not guidance:
-        set_cached(cache_key, files_data)
+    set_cached(cache_key, files_data)
 
     return JSONResponse({
         "chart_name": chart_name,

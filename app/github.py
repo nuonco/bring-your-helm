@@ -1,8 +1,11 @@
 import base64
+import io
 import re
-from dataclasses import dataclass
+import tarfile
+from dataclasses import dataclass, field
 
 import httpx
+import yaml
 
 from app.config import GITHUB_TOKEN
 
@@ -24,6 +27,12 @@ class ChartInfo:
     directory: str
     chart_yaml: str
     values_yaml: str | None
+    chart_name: str = ""
+    chart_version: str = ""
+    chart_description: str = ""
+    app_version: str = ""
+    dependencies: list[dict] = field(default_factory=list)
+    helm_repo_url: str = ""  # non-empty when chart comes from a Helm registry (not GitHub)
 
 
 def parse_github_url(url: str) -> tuple[str, str, str, str]:
@@ -57,14 +66,30 @@ def is_github_url(text: str) -> bool:
     return text.startswith("http://github.com") or text.startswith("https://github.com")
 
 
-def _parse_chart_yaml(content: str) -> dict[str, str]:
-    """Extract name, version, description from Chart.yaml content (line-based, no pyyaml)."""
-    result: dict[str, str] = {}
-    for line in content.splitlines():
-        for key in ("name", "version", "description"):
-            if line.startswith(f"{key}:"):
-                val = line.split(":", 1)[1].strip().strip('"').strip("'")
-                result[key] = val
+def _parse_chart_yaml(content: str) -> dict:
+    """Extract name, version, description, appVersion, and dependencies from Chart.yaml."""
+    try:
+        data = yaml.safe_load(content) or {}
+    except yaml.YAMLError:
+        data = {}
+
+    result: dict = {
+        "name": data.get("name", ""),
+        "version": str(data.get("version", "")),
+        "description": data.get("description", ""),
+        "appVersion": str(data.get("appVersion", "")),
+        "dependencies": [],
+    }
+
+    for dep in data.get("dependencies", []):
+        if isinstance(dep, dict):
+            result["dependencies"].append({
+                "name": dep.get("name", ""),
+                "version": str(dep.get("version", "")),
+                "repository": dep.get("repository", ""),
+                "condition": dep.get("condition", ""),
+            })
+
     return result
 
 
@@ -77,15 +102,18 @@ async def search_repos(query: str) -> list[dict]:
     """
     async with httpx.AsyncClient(timeout=15.0) as client:
         # Primary: code search for Chart.yaml files matching the query
-        resp = await client.get(
-            "https://api.github.com/search/code",
-            params={"q": f"{query} filename:Chart.yaml", "per_page": 20},
-            headers=_gh_headers(),
-        )
-        if resp.status_code == 403:
-            raise RuntimeError("GitHub API rate limit exceeded. Try again shortly.")
-        resp.raise_for_status()
-        data = resp.json()
+        # (requires authentication — falls back to repo search if no token)
+        data = {"items": []}
+        if GITHUB_TOKEN:
+            resp = await client.get(
+                "https://api.github.com/search/code",
+                params={"q": f"{query} filename:Chart.yaml", "per_page": 20},
+                headers=_gh_headers(),
+            )
+            if resp.status_code == 403:
+                raise RuntimeError("GitHub API rate limit exceeded. Try again shortly.")
+            if resp.status_code == 200:
+                data = resp.json()
 
         # Deduplicate by repo (code search returns one result per file)
         seen: set[str] = set()
@@ -171,6 +199,7 @@ async def discover_charts(org: str, repo: str, branch: str) -> list[dict]:
                 "version": info.get("version", ""),
                 "description": info.get("description", ""),
                 "path": directory,
+                "dependencies": info.get("dependencies", []),
             })
 
     return charts
@@ -242,6 +271,8 @@ async def fetch_chart(url: str) -> ChartInfo:
 
         values_yaml = await fetch_file(client, org, repo, values_path, branch)
 
+    parsed = _parse_chart_yaml(chart_yaml)
+
     return ChartInfo(
         org=org,
         repo=repo,
@@ -249,4 +280,74 @@ async def fetch_chart(url: str) -> ChartInfo:
         directory=directory,
         chart_yaml=chart_yaml,
         values_yaml=values_yaml,
+        chart_name=parsed.get("name", ""),
+        chart_version=parsed.get("version", ""),
+        chart_description=parsed.get("description", ""),
+        app_version=parsed.get("appVersion", ""),
+        dependencies=parsed.get("dependencies", []),
+    )
+
+
+async def fetch_chart_from_artifacthub(repo_name: str, package_name: str) -> ChartInfo:
+    """Fetch chart files from ArtifactHub by downloading the chart archive.
+
+    Uses the ArtifactHub package API to get the content_url, then downloads
+    and extracts Chart.yaml and values.yaml from the .tgz archive.
+    """
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # Get package details from ArtifactHub
+        resp = await client.get(
+            f"https://artifacthub.io/api/v1/packages/helm/{repo_name}/{package_name}",
+        )
+        if resp.status_code == 404:
+            raise ValueError(f"Package {repo_name}/{package_name} not found on ArtifactHub.")
+        resp.raise_for_status()
+        pkg = resp.json()
+
+        content_url = pkg.get("content_url", "")
+        if not content_url:
+            raise ValueError(f"No downloadable archive found for {repo_name}/{package_name}.")
+
+        # Get the Helm registry URL for [helm_repo] block
+        helm_repo_url = pkg.get("repository", {}).get("url", "")
+
+        # Download the .tgz archive
+        archive_resp = await client.get(content_url)
+        archive_resp.raise_for_status()
+
+    # Extract Chart.yaml and values.yaml from the archive
+    chart_yaml = None
+    values_yaml = None
+    with tarfile.open(fileobj=io.BytesIO(archive_resp.content), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            name = member.name
+            # Files are typically at chartname/Chart.yaml or chartname/values.yaml
+            basename = name.split("/", 1)[-1] if "/" in name else name
+            if basename == "Chart.yaml" and chart_yaml is None:
+                f = tar.extractfile(member)
+                if f:
+                    chart_yaml = f.read().decode("utf-8")
+            elif basename == "values.yaml" and values_yaml is None:
+                f = tar.extractfile(member)
+                if f:
+                    values_yaml = f.read().decode("utf-8")
+
+    if chart_yaml is None:
+        raise ValueError(f"No Chart.yaml found in archive for {repo_name}/{package_name}.")
+
+    parsed = _parse_chart_yaml(chart_yaml)
+
+    return ChartInfo(
+        org=repo_name,
+        repo=package_name,
+        branch="",
+        directory="",
+        chart_yaml=chart_yaml,
+        values_yaml=values_yaml,
+        chart_name=parsed.get("name", package_name),
+        chart_version=parsed.get("version", ""),
+        chart_description=parsed.get("description", ""),
+        app_version=parsed.get("appVersion", ""),
+        dependencies=parsed.get("dependencies", []),
+        helm_repo_url=helm_repo_url,
     )
