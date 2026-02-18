@@ -1,5 +1,13 @@
-import { useReducer, useCallback } from "react";
+import { useReducer, useCallback, useEffect } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
 import type { WizardState, WizardAction } from "@/lib/types";
+
+const STEP_PATHS = ["/", "/select-chart", "/configure", "/generate"] as const;
+
+function stepFromPath(pathname: string): number {
+  const idx = STEP_PATHS.indexOf(pathname as (typeof STEP_PATHS)[number]);
+  return idx >= 0 ? idx : 0;
+}
 
 const initialState: WizardState = {
   step: 0,
@@ -32,7 +40,19 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
 }
 
 export function useWizard() {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [state, dispatch] = useReducer(reducer, {
+    ...initialState,
+    step: stepFromPath(location.pathname),
+  });
+
+  useEffect(() => {
+    const targetPath = STEP_PATHS[state.step] || "/";
+    if (location.pathname !== targetPath) {
+      navigate(targetPath, { replace: true });
+    }
+  }, [state.step, navigate, location.pathname]);
 
   const goTo = useCallback((step: number) => dispatch({ type: "SET_STEP", step }), []);
   const next = useCallback(() => dispatch({ type: "SET_STEP", step: state.step + 1 }), [state.step]);

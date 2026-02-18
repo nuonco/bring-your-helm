@@ -28,6 +28,54 @@ export const NUON_VARIABLES: NuonVariable[] = [
   { name: "App Name", template: "{{.nuon.app.name}}", description: "The app name", category: "App" },
 ];
 
+export interface RecommendedPreset {
+  id: string;
+  label: string;
+  description: string;
+  yaml: string;
+}
+
+export const RECOMMENDED_PRESETS: RecommendedPreset[] = [
+  {
+    id: "database",
+    label: "Database",
+    description: "Inject managed database credentials",
+    yaml: [
+      "database:",
+      "  host: \"{{.nuon.install.infra.database_host}}\"",
+      "  name: \"{{.nuon.install.infra.database_name}}\"",
+      "  username: \"{{.nuon.install.infra.database_user}}\"",
+      "  password: \"{{.nuon.install.infra.database_password}}\"",
+    ].join("\n"),
+  },
+  {
+    id: "domain",
+    label: "Custom Domain",
+    description: "Use the install's public domain",
+    yaml: "domain: \"{{.nuon.install.public_domain}}\"",
+  },
+  {
+    id: "region",
+    label: "Region",
+    description: "Target the install's cloud region",
+    yaml: "region: \"{{.nuon.install.region}}\"",
+  },
+  {
+    id: "resources",
+    label: "Resource Limits",
+    description: "Set CPU and memory resource limits",
+    yaml: [
+      "resources:",
+      "  limits:",
+      "    cpu: 500m",
+      "    memory: 512Mi",
+      "  requests:",
+      "    cpu: 250m",
+      "    memory: 256Mi",
+    ].join("\n"),
+  },
+];
+
 export function generateNuonConfig(
   repoUrl: string,
   chartPath: string,
