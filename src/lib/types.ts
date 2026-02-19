@@ -10,11 +10,33 @@ export interface GitHubRepo {
   };
 }
 
+export interface ChartDependency {
+  name: string;
+  version: string;
+  repository: string;
+  condition: string;
+}
+
 export interface HelmChart {
   name: string;
   version: string;
   description: string;
   path: string;
+  dependencies?: ChartDependency[];
+}
+
+export interface GeneratedFile {
+  filename: string;
+  language: string;
+  content: string;
+}
+
+export interface ConfigOptions {
+  cloudProvider: "aws" | "azure";
+  infraMode: "default" | "bring-vpc" | "bring-cluster";
+  namespace: string;
+  configRepo: string;
+  infraDeps: string[];
 }
 
 export interface WizardState {
@@ -25,6 +47,7 @@ export interface WizardState {
   selectedChart: HelmChart | null;
   valuesYaml: string;
   editedValuesYaml: string;
+  configOptions: ConfigOptions;
 }
 
 export type WizardAction =
@@ -34,4 +57,5 @@ export type WizardAction =
   | { type: "SELECT_CHART"; chart: HelmChart }
   | { type: "SET_VALUES"; yaml: string }
   | { type: "SET_EDITED_VALUES"; yaml: string }
+  | { type: "SET_CONFIG_OPTIONS"; options: Partial<ConfigOptions> }
   | { type: "RESET" };

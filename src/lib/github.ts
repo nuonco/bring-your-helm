@@ -1,4 +1,4 @@
-import type { GitHubRepo, HelmChart } from "./types";
+import type { GitHubRepo, HelmChart, ChartDependency } from "./types";
 import yaml from "js-yaml";
 
 const GITHUB_API = "https://api.github.com";
@@ -100,12 +100,21 @@ export async function findHelmCharts(owner: string, repo: string, subpath?: stri
   for (const chartPath of chartYamls) {
     try {
       const content = await getFileContent(owner, repo, chartPath);
-      const parsed = yaml.load(content) as Record<string, string>;
+      const parsed = yaml.load(content) as Record<string, any>;
+      const deps: ChartDependency[] = (parsed.dependencies || [])
+        .filter((d: any) => typeof d === "object")
+        .map((d: any) => ({
+          name: d.name || "",
+          version: String(d.version || ""),
+          repository: d.repository || "",
+          condition: d.condition || "",
+        }));
       charts.push({
         name: parsed.name || chartPath,
         version: parsed.version || "unknown",
         description: parsed.description || "",
         path: chartPath.replace("/Chart.yaml", ""),
+        dependencies: deps,
       });
     } catch {
       charts.push({

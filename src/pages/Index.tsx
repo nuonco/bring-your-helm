@@ -63,6 +63,7 @@ const Index = () => {
             repo={state.repo}
             chart={state.selectedChart}
             valuesYaml={state.editedValuesYaml}
+            configOptions={state.configOptions}
             dispatch={dispatch}
             onNext={() => dispatch({ type: "SET_STEP", step: 3 })}
             onBack={() => dispatch({ type: "SET_STEP", step: 1 })}
@@ -73,6 +74,7 @@ const Index = () => {
             repo={state.repo}
             chart={state.selectedChart}
             valuesYaml={state.editedValuesYaml}
+            configOptions={state.configOptions}
             onBack={() => dispatch({ type: "SET_STEP", step: 2 })}
             onReset={reset}
             onGenerated={increment}

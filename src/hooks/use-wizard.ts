@@ -1,6 +1,6 @@
 import { useReducer, useCallback, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import type { WizardState, WizardAction } from "@/lib/types";
+import type { WizardState, WizardAction, ConfigOptions } from "@/lib/types";
 
 const STEP_PATHS = ["/", "/select-chart", "/configure", "/generate"] as const;
 
@@ -9,6 +9,14 @@ function stepFromPath(pathname: string): number {
   return idx >= 0 ? idx : 0;
 }
 
+const defaultConfigOptions: ConfigOptions = {
+  cloudProvider: "aws",
+  infraMode: "default",
+  namespace: "",
+  configRepo: "",
+  infraDeps: [],
+};
+
 const initialState: WizardState = {
   step: 0,
   repo: null,
@@ -16,6 +24,7 @@ const initialState: WizardState = {
   selectedChart: null,
   valuesYaml: "",
   editedValuesYaml: "",
+  configOptions: defaultConfigOptions,
 };
 
 function reducer(state: WizardState, action: WizardAction): WizardState {
@@ -32,6 +41,8 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, valuesYaml: action.yaml, editedValuesYaml: action.yaml };
     case "SET_EDITED_VALUES":
       return { ...state, editedValuesYaml: action.yaml };
+    case "SET_CONFIG_OPTIONS":
+      return { ...state, configOptions: { ...state.configOptions, ...action.options } };
     case "RESET":
       return initialState;
     default:

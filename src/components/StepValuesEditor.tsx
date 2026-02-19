@@ -1,8 +1,8 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { getFileContent } from "@/lib/github";
-import { NUON_VARIABLES, RECOMMENDED_PRESETS } from "@/lib/nuon";
-import type { GitHubRepo, HelmChart, WizardAction } from "@/lib/types";
+import { NUON_VARIABLES, detectInfraDeps } from "@/lib/nuon";
+import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions } from "@/lib/types";
 import { useTheme } from "@/hooks/use-theme";
 import {
   ArrowLeft,
@@ -10,10 +10,6 @@ import {
   Loader2,
   Copy,
   Check,
-  Database,
-  Globe,
-  MapPin,
-  Cpu,
   ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,17 +19,18 @@ import {
   ResizableHandle,
 } from "@/components/ui/resizable";
 
-const PRESET_ICONS: Record<string, React.ElementType> = {
-  database: Database,
-  domain: Globe,
-  region: MapPin,
-  resources: Cpu,
-};
+const INFRA_DEP_OPTIONS = [
+  { id: "postgresql", label: "PostgreSQL (RDS)" },
+  { id: "mysql", label: "MySQL (RDS)" },
+  { id: "redis", label: "Redis (ElastiCache)" },
+  { id: "minio", label: "S3 Bucket" },
+] as const;
 
 interface StepValuesEditorProps {
   repo: GitHubRepo;
   chart: HelmChart;
   valuesYaml: string;
+  configOptions: ConfigOptions;
   dispatch: React.Dispatch<WizardAction>;
   onNext: () => void;
   onBack: () => void;
@@ -43,6 +40,7 @@ export function StepValuesEditor({
   repo,
   chart,
   valuesYaml,
+  configOptions,
   dispatch,
   onNext,
   onBack,
@@ -54,12 +52,22 @@ export function StepValuesEditor({
   const [hasSelection, setHasSelection] = useState(false);
   const [selectedText, setSelectedText] = useState("");
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
-  const [enabledPresets, setEnabledPresets] = useState<Set<string>>(new Set());
-  const [mobileSection, setMobileSection] = useState<"variables" | "recommendations" | null>(null);
+  const [mobileSection, setMobileSection] = useState<"variables" | "configure" | null>(null);
   const [editorCanScroll, setEditorCanScroll] = useState(false);
   const editorRef = useRef<any>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const autoDetectedDeps = useMemo(
+    () => detectInfraDeps(chart.dependencies || []),
+    [chart.dependencies]
+  );
+
+  useEffect(() => {
+    if (autoDetectedDeps.length > 0 && configOptions.infraDeps.length === 0) {
+      dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraDeps: autoDetectedDeps } });
+    }
+  }, [autoDetectedDeps, configOptions.infraDeps.length, dispatch]);
 
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
@@ -120,36 +128,13 @@ export function StepValuesEditor({
     setTimeout(() => setCopiedVar(null), 1200);
   };
 
-  const togglePreset = useCallback(
-    (presetId: string) => {
-      const editor = editorRef.current;
-      if (!editor) return;
-      const preset = RECOMMENDED_PRESETS.find((p) => p.id === presetId);
-      if (!preset) return;
-
-      const current = editor.getValue();
-      const marker = `# --- ${preset.label} ---`;
-      const block = `\n${marker}\n${preset.yaml}\n`;
-
-      setEnabledPresets((prev) => {
-        const next = new Set(prev);
-        if (next.has(presetId)) {
-          next.delete(presetId);
-          const escaped = block.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          const cleaned = current.replace(new RegExp(escaped), "");
-          editor.setValue(cleaned);
-          dispatch({ type: "SET_EDITED_VALUES", yaml: cleaned });
-        } else {
-          next.add(presetId);
-          const appended = current + block;
-          editor.setValue(appended);
-          dispatch({ type: "SET_EDITED_VALUES", yaml: appended });
-        }
-        return next;
-      });
-    },
-    [dispatch]
-  );
+  const toggleInfraDep = (depId: string) => {
+    const current = configOptions.infraDeps;
+    const next = current.includes(depId)
+      ? current.filter((d) => d !== depId)
+      : [...current, depId];
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraDeps: next } });
+  };
 
   useEffect(() => {
     if (valuesYaml) return;
@@ -242,73 +227,114 @@ export function StepValuesEditor({
     </div>
   );
 
-  const recommendationsContent = (
-    <div className="p-4 space-y-2">
-      {RECOMMENDED_PRESETS.map((preset) => {
-        const Icon = PRESET_ICONS[preset.id];
-        const active = enabledPresets.has(preset.id);
-        return (
-          <button
-            key={preset.id}
-            onClick={() => togglePreset(preset.id)}
-            className={cn(
-              "w-full text-left px-3 py-3 rounded-lg border transition-all",
-              active
-                ? "border-primary bg-primary/10"
-                : "border-border hover:border-muted-foreground/30 hover:bg-muted/40"
-            )}
-          >
-            <div className="flex items-start gap-3">
-              <div
-                className={cn(
-                  "mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors",
-                  active
-                    ? "bg-primary border-primary"
-                    : "border-muted-foreground/40"
-                )}
-              >
-                {active && (
-                  <Check className="w-2.5 h-2.5 text-primary-foreground" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
-                  {Icon && (
-                    <Icon
-                      className={cn(
-                        "w-3.5 h-3.5 shrink-0",
-                        active ? "text-primary" : "text-muted-foreground"
-                      )}
-                    />
-                  )}
-                  <span
-                    className={cn(
-                      "text-sm font-medium",
-                      active ? "text-primary" : "text-foreground"
-                    )}
-                  >
-                    {preset.label}
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {preset.description}
-                </p>
-                {active && (
-                  <pre className="mt-2 text-xs font-mono text-muted-foreground bg-muted/50 rounded p-2 overflow-x-auto leading-relaxed">
-                    {preset.yaml}
-                  </pre>
-                )}
-              </div>
-            </div>
-          </button>
-        );
-      })}
+  const configureContent = (
+    <div className="p-4 space-y-5">
+      {/* Cloud Provider */}
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+          Cloud Provider
+        </div>
+        <div className="space-y-1.5">
+          {([["aws", "AWS (EKS)"], ["azure", "Azure (AKS)"]] as const).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-all">
+              <input
+                type="radio"
+                name="cloudProvider"
+                checked={configOptions.cloudProvider === value}
+                onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { cloudProvider: value } })}
+                className="accent-primary"
+              />
+              <span className="text-sm text-foreground">{label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
 
-      <div className="pt-3 border-t border-border mt-4">
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          Toggle a recommendation to append its YAML block to the editor.
-          Uncheck to remove.
+      {/* Infrastructure Mode */}
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+          Infrastructure Mode
+        </div>
+        <div className="space-y-1.5">
+          {([["default", "Default"], ["bring-vpc", "Bring own VPC"], ["bring-cluster", "Bring own cluster"]] as const).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-all">
+              <input
+                type="radio"
+                name="infraMode"
+                checked={configOptions.infraMode === value}
+                onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraMode: value } })}
+                className="accent-primary"
+              />
+              <span className="text-sm text-foreground">{label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Infrastructure Dependencies */}
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
+          Infrastructure Dependencies
+        </div>
+        {autoDetectedDeps.length > 0 && (
+          <p className="text-xs text-primary mb-2">
+            {autoDetectedDeps.length} detected from Chart.yaml
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {INFRA_DEP_OPTIONS.map((dep) => {
+            const checked = configOptions.infraDeps.includes(dep.id);
+            const isAutoDetected = autoDetectedDeps.includes(dep.id);
+            return (
+              <label key={dep.id} className={cn(
+                "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-all",
+                checked ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+              )}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleInfraDep(dep.id)}
+                  className="accent-primary"
+                />
+                <span className="text-sm text-foreground">{dep.label}</span>
+                {isAutoDetected && (
+                  <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-auto">auto</span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Namespace */}
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+          Namespace
+        </div>
+        <input
+          type="text"
+          value={configOptions.namespace}
+          onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { namespace: e.target.value } })}
+          placeholder={chart.name}
+          className="w-full h-9 px-3 text-sm bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+        />
+      </div>
+
+      {/* Config Repository */}
+      <div>
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
+          Config Repository
+        </div>
+        <p className="text-xs text-muted-foreground mb-2">
+          The GitHub repo where you'll push this config.
         </p>
+        <input
+          type="text"
+          value={configOptions.configRepo}
+          onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { configRepo: e.target.value } })}
+          placeholder="your-org/your-repo"
+          className="w-full h-9 px-3 text-sm font-mono bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+        />
       </div>
     </div>
   );
@@ -458,11 +484,11 @@ export function StepValuesEditor({
             <div className="flex flex-col h-full border-l border-border">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Recommendations
+                  Configure
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto">
-                {recommendationsContent}
+                {configureContent}
               </div>
             </div>
           </ResizablePanel>
@@ -491,18 +517,18 @@ export function StepValuesEditor({
           )}
         </div>
 
-        {/* Collapsible: Recommendations */}
+        {/* Collapsible: Configure */}
         <div className="border-t border-border bg-card">
           <button
-            onClick={() => setMobileSection(mobileSection === "recommendations" ? null : "recommendations")}
+            onClick={() => setMobileSection(mobileSection === "configure" ? null : "configure")}
             className="w-full flex items-center justify-between px-4 h-10 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/20"
           >
-            Recommendations
-            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "recommendations" && "rotate-180")} />
+            Configure
+            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "configure" && "rotate-180")} />
           </button>
-          {mobileSection === "recommendations" && (
-            <div className="max-h-[250px] overflow-y-auto border-t border-border">
-              {recommendationsContent}
+          {mobileSection === "configure" && (
+            <div className="max-h-[350px] overflow-y-auto border-t border-border">
+              {configureContent}
             </div>
           )}
         </div>
