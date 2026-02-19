@@ -44,8 +44,8 @@ The generated config can be downloaded as a ZIP, and each file is individually v
 ## Development
 
 ```sh
-git clone https://github.com/nuonco/byo-helm.git
-cd byo-helm
+git clone https://github.com/nuonco/bring-your-helm.git
+cd bring-your-helm
 npm install
 npm run dev
 ```
