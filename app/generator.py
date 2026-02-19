@@ -710,6 +710,34 @@ _BOUNDARY_JSON = """\
 }"""
 
 
+def _generate_stack(chart_name: str) -> GeneratedFile:
+    safe_name = chart_name.lower().replace("_", "-")
+    content = (
+        '# stack\n'
+        'type        = "aws-cloudformation"\n'
+        f'name        = "nuon-{_esc(safe_name)}-{{{{.nuon.install.id}}}}"\n'
+        f'description = "QuickLink to install runner for the {_esc(chart_name)} app config: Install {{{{.nuon.install.id}}}}"\n'
+        '\n'
+        'vpc_nested_template_url    = "https://nuon-artifacts.s3.us-west-2.amazonaws.com/aws-cloudformation-templates/v0.2.1/vpc/eks/default/stack.yaml"\n'
+        'runner_nested_template_url = "https://nuon-artifacts.s3.us-west-2.amazonaws.com/aws-cloudformation-templates/v0.2.1/runner/asg/stack.yaml"'
+    )
+    return GeneratedFile("stack.toml", "toml", content)
+
+
+def _generate_break_glass() -> GeneratedFile:
+    content = (
+        '[[role]]\n'
+        'name                 = "{{.nuon.install.id}}-break-glass"\n'
+        'description          = "Break-glass role for emergency access"\n'
+        'display_name         = "Break Glass"\n'
+        'permissions_boundary = ""\n'
+        '\n'
+        '[[role.policies]]\n'
+        'managed_policy_name = "AdministratorAccess"'
+    )
+    return GeneratedFile("break_glass.toml", "toml", content)
+
+
 def _generate_permissions() -> list[GeneratedFile]:
     """Generate the 6 required permissions files (3 TOML roles + 3 JSON boundaries)."""
     files: list[GeneratedFile] = []
@@ -771,7 +799,13 @@ def generate_config(
     # 4. runner.toml
     files.append(_generate_runner(provider))
 
-    # 5. permissions/
+    # 5. stack.toml
+    files.append(_generate_stack(chart_name))
+
+    # 6. break_glass.toml
+    files.append(_generate_break_glass())
+
+    # 7. permissions/
     files.extend(_generate_permissions())
 
     # 6. Infrastructure components
