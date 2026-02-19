@@ -1,7 +1,7 @@
 import type { GitHubRepo, HelmChart, ChartDependency } from "./types";
 import yaml from "js-yaml";
 
-const GITHUB_API = "https://api.github.com";
+const GITHUB_API = "/api/github";
 
 const cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;

@@ -25,3 +25,6 @@ dist-ssr
 
 # Lovable
 .lovable
+
+# Environment variables
+.env
