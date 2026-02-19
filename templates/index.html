@@ -213,18 +213,14 @@
                 </h2>
                 <span id="cached-badge" class="hidden text-xs px-2 py-0.5 bg-gray-700 text-gray-300 rounded-full">cached</span>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-center">
                 <button onclick="downloadAllZip()"
                         class="text-xs px-3 py-1.5 bg-nuon-700 hover:bg-nuon-600 rounded text-white transition-colors">
                     Download all as ZIP
                 </button>
-                <button onclick="expandAll()"
+                <button id="toggle-code-btn" onclick="toggleCodeVisibility()"
                         class="text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-gray-400 transition-colors">
-                    Expand all
-                </button>
-                <button onclick="collapseAll()"
-                        class="text-xs px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded text-gray-400 transition-colors">
-                    Collapse all
+                    Show code
                 </button>
             </div>
         </div>
@@ -848,15 +844,12 @@ function renderFiles(files, container) {
         const contentId = 'file-content-' + index;
 
         card.innerHTML =
-            '<div class="flex items-center justify-between px-4 py-3 cursor-pointer select-none hover:bg-gray-800/50 transition-colors" onclick="toggleFile(' + index + ')">' +
+            '<div class="flex items-center justify-between px-4 py-3">' +
                 '<div class="flex items-center gap-3">' +
-                    '<svg class="w-4 h-4 text-gray-500 transition-transform file-chevron" id="chevron-' + index + '" viewBox="0 0 20 20" fill="currentColor">' +
-                        '<path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />' +
-                    '</svg>' +
                     '<span class="font-mono text-sm text-nuon-400">' + escapeHtml(file.filename) + '</span>' +
                     '<span class="text-xs text-gray-600">' + file.language + '</span>' +
                 '</div>' +
-                '<div class="flex gap-2" onclick="event.stopPropagation()">' +
+                '<div class="flex gap-2">' +
                     '<button onclick="copyToClipboard(this, ' + index + ')"' +
                         ' class="text-xs px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-gray-300 transition-colors">' +
                         'Copy' +
@@ -867,8 +860,8 @@ function renderFiles(files, container) {
                     '</button>' +
                 '</div>' +
             '</div>' +
-            '<div id="' + contentId + '" class="hidden border-t border-gray-800">' +
-                '<pre class="p-4 text-sm text-gray-300 font-mono overflow-x-auto leading-relaxed"><code>' + escapeHtml(file.content) + '</code></pre>' +
+            '<div id="' + contentId + '" class="hidden border-t border-gray-800 file-code-content">' +
+                '<pre class="p-4 text-sm text-gray-300 font-mono overflow-auto max-h-[32rem] leading-relaxed"><code>' + escapeHtml(file.content) + '</code></pre>' +
             '</div>';
 
         container.appendChild(card);
@@ -878,35 +871,18 @@ function renderFiles(files, container) {
     window._generatedFiles = files;
 }
 
-function toggleFile(index) {
-    const content = document.getElementById('file-content-' + index);
-    const chevron = document.getElementById('chevron-' + index);
-
-    if (content.classList.contains('hidden')) {
-        content.classList.remove('hidden');
-        chevron.style.transform = 'rotate(90deg)';
-    } else {
-        content.classList.add('hidden');
-        chevron.style.transform = '';
-    }
-}
-
-function expandAll() {
-    document.querySelectorAll('[id^="file-content-"]').forEach(function(el) {
-        el.classList.remove('hidden');
+let _codeVisible = false;
+function toggleCodeVisibility() {
+    _codeVisible = !_codeVisible;
+    const btn = document.getElementById('toggle-code-btn');
+    document.querySelectorAll('.file-code-content').forEach(function(el) {
+        if (_codeVisible) {
+            el.classList.remove('hidden');
+        } else {
+            el.classList.add('hidden');
+        }
     });
-    document.querySelectorAll('.file-chevron').forEach(function(el) {
-        el.style.transform = 'rotate(90deg)';
-    });
-}
-
-function collapseAll() {
-    document.querySelectorAll('[id^="file-content-"]').forEach(function(el) {
-        el.classList.add('hidden');
-    });
-    document.querySelectorAll('.file-chevron').forEach(function(el) {
-        el.style.transform = '';
-    });
+    btn.textContent = _codeVisible ? 'Hide code' : 'Show code';
 }
 
 function copyToClipboard(btn, index) {

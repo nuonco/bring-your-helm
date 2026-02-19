@@ -56,7 +56,7 @@ export function WizardLayout({
   }, []);
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className={cn("bg-background flex flex-col", isFullscreen ? "h-screen overflow-hidden" : "min-h-screen")}>
       {/* Hairline progress bar */}
       <div className="fixed top-0 left-0 right-0 h-px bg-border z-50">
         <div
