@@ -11,6 +11,8 @@ import {
   Copy,
   Check,
   ChevronDown,
+  Code2,
+  EyeOff,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -53,6 +55,7 @@ export function StepValuesEditor({
   const [selectedText, setSelectedText] = useState("");
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [mobileSection, setMobileSection] = useState<"variables" | "configure" | null>(null);
+  const [showEditor, setShowEditor] = useState(true);
   const [editorCanScroll, setEditorCanScroll] = useState(false);
   const editorRef = useRef<any>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -114,7 +117,12 @@ export function StepValuesEditor({
   const insertAtCursor = (text: string) => {
     const editor = editorRef.current;
     if (!editor) return;
-    editor.trigger("keyboard", "type", { text });
+    const selection = editor.getSelection();
+    if (selection) {
+      editor.executeEdits("insert-variable", [
+        { range: selection, text, forceMoveMarkers: true },
+      ]);
+    }
     dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
     editor.focus();
     setCopiedVar(text);
@@ -390,19 +398,33 @@ export function StepValuesEditor({
             </span>
           </div>
         </div>
-        <button
-          onClick={onNext}
-          className="flex items-center gap-1.5 px-4 sm:px-5 h-9 rounded-lg bg-primary text-primary-foreground text-base font-medium hover:bg-primary/90 transition-colors shrink-0 ml-4"
-        >
-          Generate config
-          <ArrowRight className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-2 shrink-0 ml-4">
+          <button
+            onClick={() => setShowEditor(!showEditor)}
+            className={cn(
+              "hidden md:flex items-center gap-1.5 px-3 h-9 rounded-lg border text-sm font-medium transition-colors",
+              showEditor
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border bg-card text-foreground hover:bg-muted"
+            )}
+          >
+            {showEditor ? <EyeOff className="w-3.5 h-3.5" /> : <Code2 className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{showEditor ? "Hide editor" : "Show editor"}</span>
+          </button>
+          <button
+            onClick={onNext}
+            className="flex items-center gap-1.5 px-4 sm:px-5 h-9 rounded-lg bg-primary text-primary-foreground text-base font-medium hover:bg-primary/90 transition-colors shrink-0"
+          >
+            Generate config
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
-      {/* Desktop: 3-panel resizable layout — Configure | Editor | Variables */}
+      {/* Desktop: resizable layout — Configure | Editor | Variables */}
       <div className="hidden md:flex flex-1 min-h-0 bg-card">
-        <ResizablePanelGroup direction="horizontal">
-          <ResizablePanel defaultSize={22} minSize={16}>
+        <ResizablePanelGroup direction="horizontal" key={showEditor ? "with-editor" : "no-editor"}>
+          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
             <div className="flex flex-col h-full">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -420,69 +442,72 @@ export function StepValuesEditor({
             </div>
           </ResizablePanel>
 
-          <ResizableHandle />
-
-          <ResizablePanel defaultSize={56} minSize={30}>
-            <div className="flex flex-col h-full border-l border-border">
-              <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
-                <Editor
-                  defaultLanguage="yaml"
-                  value={valuesYaml}
-                  onChange={(value) =>
-                    dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
-                  }
-                  theme={theme === "dark" ? "vs-dark" : "vs"}
-                  onMount={handleEditorMount}
-                  options={{
-                    minimap: { enabled: false },
-                    fontSize: 14,
-                    fontFamily: "'Hack', monospace",
-                    lineNumbers: "on",
-                    scrollBeyondLastLine: false,
-                    padding: { top: 12 },
-                    wordWrap: "on",
-                    renderLineHighlight: "none",
-                    overviewRulerLanes: 0,
-                    hideCursorInOverviewRuler: true,
-                    scrollbar: {
-                      verticalScrollbarSize: 6,
-                      horizontalScrollbarSize: 6,
-                    },
-                  }}
-                />
-                {editorCanScroll && (
-                  <div className="absolute bottom-0 left-0 right-3 h-10 bg-gradient-to-t from-[var(--vscode-editor-background,hsl(var(--card)))] to-transparent pointer-events-none z-10" />
-                )}
-                {hasSelection && popoverPos && (
-                  <div
-                    className="absolute z-50 bg-card border border-border rounded-lg shadow-lg p-2 flex items-center gap-2"
-                    style={{ top: popoverPos.top, left: Math.max(8, popoverPos.left) }}
-                  >
-                    <span className="text-[11px] text-muted-foreground whitespace-nowrap">Make input:</span>
-                    <input
-                      ref={inputRef}
-                      value={inputName}
-                      onChange={(e) => setInputName(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && confirmMakeInput()}
-                      placeholder="input_name"
-                      className="h-6 w-28 px-2 text-xs font-mono bg-background border border-border rounded-md outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+          {showEditor && (
+            <>
+              <ResizableHandle />
+              <ResizablePanel defaultSize={56} minSize={30}>
+                <div className="flex flex-col h-full border-l border-border">
+                  <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
+                    <Editor
+                      defaultLanguage="yaml"
+                      value={valuesYaml}
+                      onChange={(value) =>
+                        dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
+                      }
+                      theme={theme === "dark" ? "vs-dark" : "vs"}
+                      onMount={handleEditorMount}
+                      options={{
+                        minimap: { enabled: false },
+                        fontSize: 14,
+                        fontFamily: "'Hack', monospace",
+                        lineNumbers: "on",
+                        scrollBeyondLastLine: false,
+                        padding: { top: 12 },
+                        wordWrap: "on",
+                        renderLineHighlight: "line",
+                        overviewRulerLanes: 0,
+                        hideCursorInOverviewRuler: true,
+                        scrollbar: {
+                          verticalScrollbarSize: 6,
+                          horizontalScrollbarSize: 6,
+                        },
+                      }}
                     />
-                    <button
-                      onClick={confirmMakeInput}
-                      disabled={!inputName.trim()}
-                      className="px-2.5 h-6 text-[11px] font-medium rounded-md bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/90 transition-colors shrink-0"
-                    >
-                      Replace
-                    </button>
+                    {editorCanScroll && (
+                      <div className="absolute bottom-0 left-0 right-3 h-10 bg-gradient-to-t from-[var(--vscode-editor-background,hsl(var(--card)))] to-transparent pointer-events-none z-10" />
+                    )}
+                    {hasSelection && popoverPos && (
+                      <div
+                        className="absolute z-50 bg-card border border-border rounded-lg shadow-lg p-2 flex items-center gap-2"
+                        style={{ top: popoverPos.top, left: Math.max(8, popoverPos.left) }}
+                      >
+                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">Make input:</span>
+                        <input
+                          ref={inputRef}
+                          value={inputName}
+                          onChange={(e) => setInputName(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && confirmMakeInput()}
+                          placeholder="input_name"
+                          className="h-6 w-28 px-2 text-xs font-mono bg-background border border-border rounded-md outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+                        />
+                        <button
+                          onClick={confirmMakeInput}
+                          disabled={!inputName.trim()}
+                          className="px-2.5 h-6 text-[11px] font-medium rounded-md bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/90 transition-colors shrink-0"
+                        >
+                          Replace
+                        </button>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
-          </ResizablePanel>
+                </div>
+              </ResizablePanel>
+            </>
+          )}
 
           <ResizableHandle />
 
-          <ResizablePanel defaultSize={22} minSize={16}>
+          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
             <div className="flex flex-col h-full border-l border-border">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">

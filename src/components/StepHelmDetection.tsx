@@ -24,10 +24,6 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
       .then((found) => {
         setCharts(found);
         dispatch({ type: "SET_CHARTS", charts: found });
-        if (found.length === 1) {
-          dispatch({ type: "SELECT_CHART", chart: found[0] });
-          onNext();
-        }
       })
       .catch(() => setError("Couldn't scan this repository. It may be too large or rate-limited."))
       .finally(() => setLoading(false));
