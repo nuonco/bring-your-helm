@@ -87,6 +87,12 @@
   code, pre, .font-mono {
     font-family: 'Hack', monospace;
   }
+
+  .dark input[type="checkbox"],
+  .dark input[type="radio"] {
+    color-scheme: dark;
+    accent-color: hsl(213 94% 58%);
+  }
 }
 
 @layer utilities {

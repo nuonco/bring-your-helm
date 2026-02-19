@@ -234,9 +234,9 @@ export function StepValuesEditor({
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
           Cloud Provider
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-0.5">
           {([["aws", "AWS (EKS)"], ["azure", "Azure (AKS)"]] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-all">
+            <label key={value} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
               <input
                 type="radio"
                 name="cloudProvider"
@@ -255,9 +255,9 @@ export function StepValuesEditor({
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
           Infrastructure Mode
         </div>
-        <div className="space-y-1.5">
+        <div className="space-y-0.5">
           {([["default", "Default"], ["bring-vpc", "Bring own VPC"], ["bring-cluster", "Bring own cluster"]] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-border hover:bg-muted/40 cursor-pointer transition-all">
+            <label key={value} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
               <input
                 type="radio"
                 name="infraMode"
@@ -286,10 +286,7 @@ export function StepValuesEditor({
             const checked = configOptions.infraDeps.includes(dep.id);
             const isAutoDetected = autoDetectedDeps.includes(dep.id);
             return (
-              <label key={dep.id} className={cn(
-                "flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-all",
-                checked ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
-              )}>
+              <label key={dep.id} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
                 <input
                   type="checkbox"
                   checked={checked}
@@ -402,11 +399,31 @@ export function StepValuesEditor({
         </button>
       </div>
 
-      {/* Desktop: 3-panel resizable layout */}
+      {/* Desktop: 3-panel resizable layout — Configure | Editor | Variables */}
       <div className="hidden md:flex flex-1 min-h-0 bg-card">
         <ResizablePanelGroup direction="horizontal">
-          <ResizablePanel defaultSize={50} minSize={30}>
+          <ResizablePanel defaultSize={22} minSize={16}>
             <div className="flex flex-col h-full">
+              <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
+                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  Configure
+                </span>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <div className="px-4 pt-3 pb-2">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Set your deployment target and infrastructure options. These settings control which Nuon config files are generated.
+                  </p>
+                </div>
+                {configureContent}
+              </div>
+            </div>
+          </ResizablePanel>
+
+          <ResizableHandle />
+
+          <ResizablePanel defaultSize={56} minSize={30}>
+            <div className="flex flex-col h-full border-l border-border">
               <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
                 <Editor
                   defaultLanguage="yaml"
@@ -465,7 +482,7 @@ export function StepValuesEditor({
 
           <ResizableHandle />
 
-          <ResizablePanel defaultSize={25} minSize={18}>
+          <ResizablePanel defaultSize={22} minSize={16}>
             <div className="flex flex-col h-full border-l border-border">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -473,22 +490,12 @@ export function StepValuesEditor({
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto">
+                <div className="px-4 pt-3 pb-2">
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Click to copy a template variable, or use Insert to add it at the cursor position in the editor.
+                  </p>
+                </div>
                 {variablesContent}
-              </div>
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle />
-
-          <ResizablePanel defaultSize={25} minSize={18}>
-            <div className="flex flex-col h-full border-l border-border">
-              <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Configure
-                </span>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {configureContent}
               </div>
             </div>
           </ResizablePanel>
@@ -499,22 +506,6 @@ export function StepValuesEditor({
       <div className="flex flex-col md:hidden flex-1 min-h-0">
         <div className="flex-1 min-h-[250px] bg-card">
           {mobileEditorPanel}
-        </div>
-
-        {/* Collapsible: Template Variables */}
-        <div className="border-t border-border bg-card">
-          <button
-            onClick={() => setMobileSection(mobileSection === "variables" ? null : "variables")}
-            className="w-full flex items-center justify-between px-4 h-10 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/20"
-          >
-            Variables
-            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "variables" && "rotate-180")} />
-          </button>
-          {mobileSection === "variables" && (
-            <div className="max-h-[250px] overflow-y-auto border-t border-border">
-              {variablesContent}
-            </div>
-          )}
         </div>
 
         {/* Collapsible: Configure */}
@@ -529,6 +520,22 @@ export function StepValuesEditor({
           {mobileSection === "configure" && (
             <div className="max-h-[350px] overflow-y-auto border-t border-border">
               {configureContent}
+            </div>
+          )}
+        </div>
+
+        {/* Collapsible: Template Variables */}
+        <div className="border-t border-border bg-card">
+          <button
+            onClick={() => setMobileSection(mobileSection === "variables" ? null : "variables")}
+            className="w-full flex items-center justify-between px-4 h-10 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/20"
+          >
+            Variables
+            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "variables" && "rotate-180")} />
+          </button>
+          {mobileSection === "variables" && (
+            <div className="max-h-[250px] overflow-y-auto border-t border-border">
+              {variablesContent}
             </div>
           )}
         </div>

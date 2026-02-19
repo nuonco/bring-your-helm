@@ -37,10 +37,11 @@ export function WizardLayout({
   const { theme, toggle } = useTheme();
   const progress = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const isLanding = currentStep === 0;
+  const isFullscreen = currentStep === 2 || currentStep === 3;
   const contentWidth = isLanding
     ? "max-w-5xl"
-    : currentStep === 2
-      ? "max-w-[1800px]"
+    : isFullscreen
+      ? ""
       : "max-w-3xl";
   const [shared, setShared] = useState(false);
 
@@ -65,7 +66,7 @@ export function WizardLayout({
       </div>
 
       {/* Header */}
-      <header className={cn("px-4 sm:px-6 shrink-0", currentStep === 2 ? "py-2.5 border-b border-border" : "py-4 sm:py-5")}>
+      <header className={cn("px-4 sm:px-6 shrink-0", isFullscreen ? "py-2.5 border-b border-border" : "py-4 sm:py-5")}>
         <div className="max-w-[1800px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <button
@@ -108,19 +109,19 @@ export function WizardLayout({
       <main
         className={cn(
           "flex-1",
-          currentStep === 2
+          isFullscreen
             ? "flex flex-col min-h-0"
             : "px-4 sm:px-6",
           isLanding
             ? "pt-8 sm:pt-12 pb-12 sm:pb-20"
-            : currentStep === 2
+            : isFullscreen
               ? ""
               : "flex items-center justify-center pb-8 sm:pb-16"
         )}
       >
         <div className={cn(
           "w-full",
-          currentStep === 2
+          isFullscreen
             ? "flex-1 flex flex-col min-h-0"
             : cn("mx-auto", contentWidth)
         )}>

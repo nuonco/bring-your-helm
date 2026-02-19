@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useCallback } from "react";
 import { codeToHtml } from "shiki";
 import { generateNuonConfig } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions } from "@/lib/types";
-import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen } from "lucide-react";
+import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import JSZip from "jszip";
 
@@ -62,47 +62,61 @@ function TreeItem({
   depth,
   selectedPath,
   onSelect,
+  defaultOpen = true,
 }: {
   node: TreeNode;
   depth: number;
   selectedPath: string;
   onSelect: (file: GeneratedFile) => void;
+  defaultOpen?: boolean;
 }) {
   const isFolder = !node.file;
   const isSelected = node.file && node.path === selectedPath;
+  const [open, setOpen] = useState(defaultOpen);
+
+  if (isFolder) {
+    return (
+      <>
+        <button
+          onClick={() => setOpen(!open)}
+          className="w-full flex items-center gap-1.5 py-1 text-left transition-colors rounded-md px-1 text-muted-foreground hover:text-foreground hover:bg-muted/50 cursor-pointer"
+          style={{ paddingLeft: `${depth * 12 + 4}px` }}
+        >
+          <ChevronRight className={cn("w-3 h-3 shrink-0 transition-transform", open && "rotate-90")} />
+          {open ? (
+            <FolderOpen className="w-3.5 h-3.5 shrink-0" />
+          ) : (
+            <Folder className="w-3.5 h-3.5 shrink-0" />
+          )}
+          <span className="truncate font-mono text-xs font-medium">{node.name}</span>
+        </button>
+        {open && node.children.map((child) => (
+          <TreeItem
+            key={child.path}
+            node={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+          />
+        ))}
+      </>
+    );
+  }
 
   return (
-    <>
-      <button
-        onClick={() => node.file && onSelect(node.file)}
-        className={cn(
-          "w-full flex items-center gap-2 py-1.5 text-left text-sm transition-colors rounded-md px-2",
-          isFolder
-            ? "text-muted-foreground font-medium cursor-default"
-            : isSelected
-              ? "bg-primary/10 text-primary font-medium"
-              : "text-foreground hover:bg-muted/50 cursor-pointer"
-        )}
-        style={{ paddingLeft: `${depth * 16 + 8}px` }}
-        disabled={isFolder}
-      >
-        {isFolder ? (
-          <Folder className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <FileText className="w-3.5 h-3.5 shrink-0" />
-        )}
-        <span className="truncate font-mono text-xs">{node.name}</span>
-      </button>
-      {node.children.map((child) => (
-        <TreeItem
-          key={child.path}
-          node={child}
-          depth={depth + (isFolder ? 1 : 0)}
-          selectedPath={selectedPath}
-          onSelect={onSelect}
-        />
-      ))}
-    </>
+    <button
+      onClick={() => onSelect(node.file!)}
+      className={cn(
+        "w-full flex items-center gap-1.5 py-1 text-left transition-colors rounded-md px-1",
+        isSelected
+          ? "bg-primary/10 text-primary font-medium"
+          : "text-foreground hover:bg-muted/50 cursor-pointer"
+      )}
+      style={{ paddingLeft: `${depth * 12 + 19}px` }}
+    >
+      <FileText className="w-3.5 h-3.5 shrink-0" />
+      <span className="truncate font-mono text-xs">{node.name}</span>
+    </button>
   );
 }
 
@@ -169,12 +183,14 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   const [selectedFile, setSelectedFile] = useState<GeneratedFile>(files[0]);
   const [highlighted, setHighlighted] = useState("");
   const [copied, setCopied] = useState(false);
+  const [showCode, setShowCode] = useState(false);
   const appDirName = chart.name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
   useEffect(() => {
+    if (!showCode) return;
     const lang = SHIKI_LANG_MAP[selectedFile.language] || "text";
     codeToHtml(selectedFile.content, { lang, theme: "github-dark" }).then(setHighlighted);
-  }, [selectedFile]);
+  }, [selectedFile, showCode]);
 
   useEffect(() => {
     onGenerated();
@@ -250,6 +266,18 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
           <button
+            onClick={() => setShowCode(!showCode)}
+            className={cn(
+              "flex items-center gap-1.5 px-3 h-9 rounded-lg border text-sm font-medium transition-colors",
+              showCode
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border bg-card text-foreground hover:bg-muted"
+            )}
+          >
+            {showCode ? <EyeOff className="w-3.5 h-3.5" /> : <Code2 className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{showCode ? "Hide code" : "Show code"}</span>
+          </button>
+          <button
             onClick={downloadZip}
             className="flex items-center gap-1.5 px-4 h-9 rounded-lg border border-border bg-card text-foreground text-sm font-medium hover:bg-muted transition-colors"
           >
@@ -268,65 +296,79 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
         </div>
       </div>
 
-      {/* Two-panel layout */}
+      {/* Panel layout */}
       <div className="flex flex-1 min-h-0">
         {/* File tree - left */}
-        <div className="w-56 lg:w-64 shrink-0 border-r border-border bg-card overflow-y-auto py-2 px-1.5">
+        <div className="w-48 lg:w-56 shrink-0 border-r border-border bg-card overflow-y-auto py-2 px-1.5">
           {tree.map((node) => (
             <TreeItem
               key={node.path}
               node={node}
               depth={0}
               selectedPath={selectedFile.filename}
-              onSelect={setSelectedFile}
+              onSelect={(file) => {
+                setSelectedFile(file);
+                if (!showCode) setShowCode(true);
+              }}
             />
           ))}
         </div>
 
-        {/* Code viewer + guide - right */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
-          {/* File toolbar */}
-          <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
-            <span className="text-sm font-mono text-muted-foreground truncate min-w-0 flex-1">
-              {selectedFile.filename}
-            </span>
-            <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded uppercase shrink-0", badgeColor)}>
-              {selectedFile.language}
-            </span>
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
-              <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
-            </button>
-            <button
-              onClick={handleDownloadFile}
-              className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
-            >
-              <Download className="w-3.5 h-3.5" />
-            </button>
+        {/* Code viewer - center (togglable) */}
+        {showCode && (
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
+              <span className="text-sm font-mono text-muted-foreground truncate min-w-0 flex-1">
+                {selectedFile.filename}
+              </span>
+              <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded uppercase shrink-0", badgeColor)}>
+                {selectedFile.language}
+              </span>
+              <button
+                onClick={handleCopy}
+                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-primary" /> : <Copy className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{copied ? "Copied" : "Copy"}</span>
+              </button>
+              <button
+                onClick={handleDownloadFile}
+                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto bg-[#24292e] dark:bg-[#0d1117]">
+              <div
+                className="[&_pre]:!bg-transparent [&_pre]:px-5 [&_pre]:py-4 [&_pre]:m-0 [&_code]:text-[13px] [&_code]:!leading-snug [&_.line]:block [&_.line:empty]:h-[18px]"
+                dangerouslySetInnerHTML={{ __html: highlighted }}
+              />
+            </div>
           </div>
+        )}
 
-          {/* Code */}
-          <div className="bg-[#24292e] dark:bg-[#0d1117]">
-            <div
-              className="text-sm [&_pre]:!bg-transparent [&_pre]:px-5 [&_pre]:py-4 [&_pre]:m-0 [&_code]:text-[14px] [&_code]:leading-[1.7] [&_.line]:block"
-              dangerouslySetInnerHTML={{ __html: highlighted }}
-            />
+        {/* Next steps guide - right (expands when code hidden) */}
+        <div className={cn(
+          "shrink-0 border-l border-border bg-card flex flex-col",
+          showCode ? "w-80 lg:w-96" : "flex-1"
+        )}>
+          <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+              Next Steps
+            </span>
           </div>
-
-          {/* Next steps guide */}
-          <div className="border-t border-border bg-card px-6 py-6">
-            <h3 className="text-base font-medium text-foreground mb-5">What to do with these files</h3>
+          <div className={cn(
+            "flex-1 overflow-y-auto py-5",
+            showCode ? "px-4" : "px-6 max-w-2xl"
+          )}>
             <ol className="space-y-5">
               <NextStep
                 number={1}
                 icon={Terminal}
-                title="Create a git repository for your app config"
+                title="Create a git repo"
               >
-                <p className="text-sm text-muted-foreground leading-relaxed mb-2">
-                  Nuon app configurations live in a git repository. Create a new directory named after your app (the directory name must match your Nuon app name):
+                <p className="text-xs text-muted-foreground leading-relaxed mb-2">
+                  Create a new directory named after your app (must match your Nuon app name):
                 </p>
                 <CodeSnippet text={`mkdir ${appDirName} && cd ${appDirName}\ngit init`} />
               </NextStep>
@@ -336,10 +378,10 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 icon={FolderTree}
                 title="Save the generated files"
               >
-                <p className="text-sm text-muted-foreground leading-relaxed mb-2">
-                  Use the "Download all as ZIP" button or copy individual files into your app directory. Maintain the directory structure shown in the filenames:
+                <p className="text-xs text-muted-foreground leading-relaxed mb-2">
+                  Download the ZIP and extract, or copy individual files. Keep the directory structure:
                 </p>
-                <pre className="text-xs font-mono text-muted-foreground bg-muted/50 rounded-lg px-3 py-2.5 leading-relaxed overflow-x-auto">
+                <pre className="text-[11px] font-mono text-muted-foreground bg-muted/50 rounded-md px-2.5 py-2 leading-relaxed overflow-x-auto">
 {`${appDirName}/
   metadata.toml
   inputs.toml
@@ -356,14 +398,10 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 icon={Pencil}
                 title="Review and customize"
               >
-                <p className="text-sm text-muted-foreground leading-relaxed mb-1.5">
-                  The generated config is a scaffold that needs your review:
-                </p>
-                <ul className="text-sm text-muted-foreground leading-relaxed list-disc list-inside space-y-1">
-                  <li>Check <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">inputs.toml</code> — add or remove customer-facing inputs</li>
-                  <li>Check the values file — look for <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">TODO</code> comments and wire Nuon template variables to the right Helm values</li>
-                  <li>The original values.yaml is included — customize it with <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{"{{ .nuon.inputs.inputs.<name> }}"}</code> variables</li>
-                  <li>Add <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">sandbox.toml</code>, <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">runner.toml</code>, and <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">permissions/</code> as needed (see docs)</li>
+                <ul className="text-xs text-muted-foreground leading-relaxed space-y-1">
+                  <li>Check <code className="font-mono text-[11px] bg-muted/60 px-1 py-0.5 rounded">inputs.toml</code> — add or remove customer-facing inputs</li>
+                  <li>Check the values file — look for <code className="font-mono text-[11px] bg-muted/60 px-1 py-0.5 rounded">TODO</code> comments</li>
+                  <li>Replace static values with <code className="font-mono text-[11px] bg-muted/60 px-1 py-0.5 rounded">{"{{.nuon.inputs.inputs.<name>}}"}</code></li>
                 </ul>
               </NextStep>
 
@@ -372,9 +410,6 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 icon={Rocket}
                 title="Create your app and sync"
               >
-                <p className="text-sm text-muted-foreground leading-relaxed mb-2">
-                  Use the Nuon CLI to create your app in the control plane and sync the config:
-                </p>
                 <CodeSnippet text={`nuon apps create -n ${appDirName}\nnuon apps sync`} />
               </NextStep>
 
@@ -383,26 +418,20 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 icon={ShieldCheck}
                 title="Validate"
               >
-                <p className="text-sm text-muted-foreground leading-relaxed mb-2">
-                  After syncing, validate your configuration to catch any issues before deployment:
-                </p>
                 <CodeSnippet text="nuon apps validate" />
               </NextStep>
             </ol>
 
-            <div className="mt-5 pt-4 border-t border-border flex items-center gap-2">
-              <BookOpen className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-              <span className="text-sm text-muted-foreground">
-                For the full configuration file reference, see the{" "}
-                <a
-                  href="https://docs.nuon.co/configuration-files"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline"
-                >
-                  Nuon configuration docs
-                </a>.
-              </span>
+            <div className="mt-4 pt-3 border-t border-border">
+              <a
+                href="https://docs.nuon.co/configuration-files"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-xs text-primary hover:underline"
+              >
+                <BookOpen className="w-3 h-3 shrink-0" />
+                Nuon configuration docs
+              </a>
             </div>
           </div>
         </div>

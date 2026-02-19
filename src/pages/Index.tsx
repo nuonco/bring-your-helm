@@ -41,7 +41,7 @@ const Index = () => {
       configCount={count}
       onReset={reset}
     >
-      <div key={state.step} className="animate-step-in">
+      <div key={state.step} className={`animate-step-in ${state.step >= 2 ? "flex-1 flex flex-col min-h-0" : ""}`}>
         {state.step === 0 && (
           <StepSearch
             dispatch={dispatch}
