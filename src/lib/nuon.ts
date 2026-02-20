@@ -721,7 +721,7 @@ TARGET_NAMESPACE = "${esc(namespace)}"`,
   };
 }
 
-function generateValuesFile(
+export function generateValuesFile(
   chartName: string,
   originalValues: string | null,
   infraDeps: string[],
