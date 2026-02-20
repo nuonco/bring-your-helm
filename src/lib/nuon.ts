@@ -1,4 +1,5 @@
 import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency } from "./types";
+import yaml from "js-yaml";
 
 // ---------------------------------------------------------------------------
 // Nuon template variables for the sidebar
@@ -48,8 +49,6 @@ export const KNOWN_INFRA_DEPS: Record<string, { component: string; engine: strin
   minio: { component: "s3", engine: null, label: "S3-compatible Storage" },
 };
 
-const PASSWORD_PATTERN = /^(\s*)(password|adminPassword|admin-password|auth\.password|postgresqlPassword|postgresPassword|rootPassword|auth\.postgresPassword|auth\.adminPassword|repmgrPassword|srCheckPassword|mariadbPassword|mysqlPassword|redisPassword):\s*(.+)$/gm;
-
 export function detectInfraDeps(dependencies: ChartDependency[]): string[] {
   const detected: string[] = [];
   for (const dep of dependencies) {
@@ -69,40 +68,121 @@ function esc(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function rewritePasswords(values: string): string {
-  return values.replace(PASSWORD_PATTERN, (_, indent, key) =>
-    `${indent}${key}: "{{ .nuon.inputs.inputs.admin_password }}"`
-  );
+// --- YAML analysis helpers for generateValuesFile ---
+
+const INFRA_KEY_PATTERNS: Record<string, RegExp> = {
+  postgresql: /^(postgresql|postgres|postgresql-ha)$/i,
+  mysql: /^(mysql|mariadb)$/i,
+  mariadb: /^(mariadb|mysql)$/i,
+  redis: /^(redis|valkey|valkey-cluster|redis-cluster|redis-ha)$/i,
+  memcached: /^(memcached)$/i,
+  minio: /^(minio|s3)$/i,
+};
+
+const PASSWORD_KEYS = /^(password|adminPassword|admin-password|rootPassword|postgresqlPassword|postgresPassword|mariadbPassword|mysqlPassword|redisPassword|repmgrPassword|srCheckPassword)$/;
+
+interface IngressInfo {
+  exists: boolean;
+  keyPath: string[];
+  structure: "hostname" | "hosts-array" | "unknown";
 }
 
-function stripConflictingKeys(values: string, keysToStrip: string[]): string {
-  const lines = values.split("\n");
-  const result: string[] = [];
-  let skipping = false;
+interface PasswordField {
+  path: string[];
+  value: string;
+}
 
-  for (const line of lines) {
-    const stripped = line.trim();
-    if (stripped && !stripped.startsWith("#") && !line.startsWith(" ") && !line.startsWith("\t")) {
-      const keyName = stripped.includes(":") ? stripped.split(":")[0].trim() : "";
-      if (keysToStrip.includes(keyName)) {
-        skipping = true;
-        result.push(`# [${keyName}: overridden by Nuon wiring above]`);
-        continue;
-      } else {
-        skipping = false;
-      }
-    }
-
-    if (skipping) {
-      if (!stripped || line.startsWith(" ") || line.startsWith("\t") || stripped.startsWith("#")) {
-        continue;
-      } else {
-        skipping = false;
-      }
-    }
-    result.push(line);
+/** Scan top-level values.yaml keys to find the chart's actual names for infra deps */
+function findInfraKeys(parsed: Record<string, unknown>, infraDeps: string[]): Record<string, string[]> {
+  const topKeys = Object.keys(parsed);
+  const result: Record<string, string[]> = {};
+  for (const dep of infraDeps) {
+    const pattern = INFRA_KEY_PATTERNS[dep];
+    if (!pattern) continue;
+    const matches = topKeys.filter((k) => pattern.test(k));
+    if (matches.length > 0) result[dep] = matches;
   }
-  return result.join("\n");
+  return result;
+}
+
+/** Detect the chart's ingress structure (flat hostname vs hosts array) */
+function detectIngressStructure(parsed: Record<string, unknown>, path: string[] = []): IngressInfo {
+  const none: IngressInfo = { exists: false, keyPath: [], structure: "unknown" };
+
+  if (parsed.ingress && typeof parsed.ingress === "object" && !Array.isArray(parsed.ingress)) {
+    const ing = parsed.ingress as Record<string, unknown>;
+    if ("hostname" in ing) return { exists: true, keyPath: [...path, "ingress"], structure: "hostname" };
+    if ("hosts" in ing && Array.isArray(ing.hosts)) return { exists: true, keyPath: [...path, "ingress"], structure: "hosts-array" };
+    if ("enabled" in ing || "host" in ing || "tls" in ing) return { exists: true, keyPath: [...path, "ingress"], structure: "unknown" };
+  }
+
+  // Check one level deep (e.g. server.ingress)
+  if (path.length === 0) {
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const nested = detectIngressStructure(value as Record<string, unknown>, [key]);
+        if (nested.exists) return nested;
+      }
+    }
+  }
+
+  return none;
+}
+
+/** Walk the parsed YAML tree and return paths to password-like fields */
+function findPasswordPaths(obj: unknown, path: string[] = []): PasswordField[] {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return [];
+  const results: PasswordField[] = [];
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (typeof value === "string" && value !== "" && PASSWORD_KEYS.test(key)) {
+      results.push({ path: [...path, key], value });
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      results.push(...findPasswordPaths(value, [...path, key]));
+    }
+  }
+  return results;
+}
+
+/** Emit nested YAML: given a key path and content lines, produce indented output */
+function emitNestedYaml(keyPath: string[], contentLines: string[]): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < keyPath.length; i++) {
+    lines.push("  ".repeat(i) + keyPath[i] + ":");
+  }
+  const base = "  ".repeat(keyPath.length);
+  for (const cl of contentLines) {
+    lines.push(base + cl);
+  }
+  return lines;
+}
+
+/** Build a tree from password field paths and serialize to YAML lines */
+function emitPasswordOverrides(passwords: PasswordField[]): string[] {
+  if (passwords.length === 0) return [];
+  const tree: Record<string, unknown> = {};
+  for (const pw of passwords) {
+    let current: Record<string, unknown> = tree;
+    for (let i = 0; i < pw.path.length - 1; i++) {
+      const seg = pw.path[i];
+      if (!(seg in current) || typeof current[seg] !== "object") current[seg] = {};
+      current = current[seg] as Record<string, unknown>;
+    }
+    current[pw.path[pw.path.length - 1]] = "{{ .nuon.inputs.inputs.admin_password }}";
+  }
+
+  const lines: string[] = [];
+  function serialize(obj: Record<string, unknown>, indent: number) {
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof value === "string") {
+        lines.push("  ".repeat(indent) + `${key}: "${value}"`);
+      } else {
+        lines.push("  ".repeat(indent) + `${key}:`);
+        serialize(value as Record<string, unknown>, indent + 1);
+      }
+    }
+  }
+  serialize(tree, 0);
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,10 +374,6 @@ function generateDatabaseComponent(engine: string, chartName: string, number: nu
   const dbPort = engine === "postgres" ? "5432" : "3306";
   const repo = configRepo || "YOUR_ORG/YOUR_REPO";
 
-  const todo = configRepo
-    ? ""
-    : `\n#\n# TODO: After pushing this config to your GitHub repo, update [public_repo]\n# to point to your repo. The Terraform code is in ${tfDir}/`;
-
   const toml: GeneratedFile = {
     filename: `components/${number}-rds.toml`,
     language: "toml",
@@ -305,7 +381,6 @@ function generateDatabaseComponent(engine: string, chartName: string, number: nu
 name = "rds"
 type = "terraform_module"
 terraform_version = "1.11.3"
-# Provisions an RDS ${engineLabel} instance for ${chartName}${todo}
 
 [public_repo]
 repo = "${esc(repo)}"
@@ -440,17 +515,13 @@ output "db_instance_master_user_secret_arn" {
 function generateElasticacheComponent(engine: string, number: number, configRepo: string): GeneratedFile[] {
   const tfDir = `components/${number}-elasticache`;
   const repo = configRepo || "YOUR_ORG/YOUR_REPO";
-  const todo = configRepo
-    ? ""
-    : `\n#\n# TODO: After pushing this config to your GitHub repo, update [public_repo]\n# to point to your repo. The Terraform code is in ${tfDir}/`;
-
   const toml: GeneratedFile = {
     filename: `components/${number}-elasticache.toml`,
     language: "toml",
     content: `# terraform
 name = "elasticache"
 type = "terraform_module"
-terraform_version = "1.11.3"${todo}
+terraform_version = "1.11.3"
 
 [public_repo]
 repo = "${esc(repo)}"
@@ -527,17 +598,13 @@ output "endpoint" {
 function generateS3Component(chartName: string, number: number, configRepo: string): GeneratedFile[] {
   const tfDir = `components/${number}-s3`;
   const repo = configRepo || "YOUR_ORG/YOUR_REPO";
-  const todo = configRepo
-    ? ""
-    : `\n#\n# TODO: After pushing this config to your GitHub repo, update [public_repo]\n# to point to your repo. The Terraform code is in ${tfDir}/`;
-
   const toml: GeneratedFile = {
     filename: `components/${number}-s3.toml`,
     language: "toml",
     content: `# terraform
 name = "s3"
 type = "terraform_module"
-terraform_version = "1.11.3"${todo}
+terraform_version = "1.11.3"
 
 [public_repo]
 repo = "${esc(repo)}"
@@ -659,103 +726,145 @@ function generateValuesFile(
   originalValues: string | null,
   infraDeps: string[],
 ): GeneratedFile {
-  const sections: string[] = [];
+  const lines: string[] = [];
 
-  sections.push(`# =============================================================================
-# Nuon-templated values for ${chartName}
-# =============================================================================
-#
-# TODO: Review the sections below. Wire Nuon template variables to the
-# Helm values that should be configurable per customer install.
-#
-# Template variable docs: https://docs.nuon.co/configuration-files
-# =============================================================================`);
+  // Header
+  lines.push(`# Nuon values for ${chartName}`);
+  lines.push("# https://docs.nuon.co/guides/helm-chart-components");
 
+  // Parse original values for structured analysis
+  let parsed: Record<string, unknown> = {};
+  if (originalValues) {
+    try {
+      const loaded = yaml.load(originalValues);
+      if (loaded && typeof loaded === "object") parsed = loaded as Record<string, unknown>;
+    } catch {
+      // parse failed — proceed with empty object
+    }
+  }
+
+  const infraKeys = findInfraKeys(parsed, infraDeps);
+
+  // Collect all keys being disabled so we can skip their password fields
+  const disabledKeys = new Set<string>();
+  for (const keys of Object.values(infraKeys)) {
+    for (const k of keys) disabledKeys.add(k);
+  }
+
+  // --- Database ---
   const hasPg = infraDeps.includes("postgresql");
   const hasMysql = infraDeps.some((d) => ["mysql", "mariadb"].includes(d));
+
+  if (hasPg || hasMysql) {
+    const depName = hasPg ? "postgresql" : infraDeps.includes("mysql") ? "mysql" : "mariadb";
+    const keysToDisable = infraKeys[depName] || [depName];
+
+    lines.push("");
+    for (const key of keysToDisable) {
+      lines.push(`${key}:`);
+      lines.push("  enabled: false");
+    }
+
+    lines.push("");
+    lines.push("externalDatabase:");
+    lines.push(`  host: "{{ .nuon.components.rds.outputs.address }}"`);
+    lines.push("  port: {{ .nuon.components.rds.outputs.db_instance_port }}");
+    lines.push(`  database: "{{ .nuon.inputs.inputs.db_name }}"`);
+    lines.push(`  existingSecret: "${chartName}-db-credentials"`);
+    lines.push('  existingSecretPasswordKey: "password"');
+  }
+
+  // --- Cache ---
   const hasRedis = infraDeps.includes("redis");
+  const hasMemcached = infraDeps.includes("memcached");
 
-  if (hasPg) {
-    sections.push(`
-# --- PostgreSQL: disable bundled subchart, use Nuon-managed RDS ---
-postgresql:
-  enabled: false
+  if (hasRedis || hasMemcached) {
+    const depName = hasRedis ? "redis" : "memcached";
+    const keysToDisable = infraKeys[depName] || [depName];
 
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: {{ .nuon.components.rds.outputs.db_instance_port }}
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials — use the Kubernetes secret created by the
-  # db-credentials action, or reference inputs for username/password
-  # existingSecret: "${chartName}-db-credentials"
-  # existingSecretPasswordKey: "password"`);
+    lines.push("");
+    for (const key of keysToDisable) {
+      lines.push(`${key}:`);
+      lines.push("  enabled: false");
+    }
+
+    lines.push("");
+    lines.push("externalRedis:");
+    lines.push(`  host: "{{ .nuon.components.elasticache.outputs.endpoint }}"`);
+    lines.push("  port: 6379");
   }
 
-  if (hasMysql) {
-    sections.push(`
-# --- MySQL: disable bundled subchart, use Nuon-managed RDS ---
-mysql:
-  enabled: false
+  // --- S3 ---
+  const hasS3 = infraDeps.some((d) => ["minio", "s3"].includes(d));
+  if (hasS3) {
+    const depName = infraDeps.includes("minio") ? "minio" : "s3";
+    const keysToDisable = infraKeys[depName] || [];
 
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: 3306
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials from the db-credentials action`);
+    if (keysToDisable.length > 0) {
+      lines.push("");
+      for (const key of keysToDisable) {
+        lines.push(`${key}:`);
+        lines.push("  enabled: false");
+      }
+    }
+
+    lines.push("");
+    lines.push("# S3 bucket: {{ .nuon.components.s3.outputs.bucket_name }}");
   }
 
-  if (hasRedis) {
-    sections.push(`
-# --- Redis: disable bundled subchart, use Nuon-managed ElastiCache ---
-redis:
-  enabled: false
+  // --- Ingress ---
+  const ingressInfo = detectIngressStructure(parsed);
+  if (ingressInfo.exists) {
+    const domain = "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}";
+    lines.push("");
 
-# TODO: wire external Redis connection using your chart's key structure
-# externalRedis:
-#   host: "{{ .nuon.components.elasticache.outputs.endpoint }}"
-#   port: 6379`);
+    if (ingressInfo.structure === "hostname") {
+      lines.push(...emitNestedYaml(ingressInfo.keyPath, [
+        "enabled: true",
+        `hostname: "${domain}"`,
+        "annotations:",
+        `  external-dns.alpha.kubernetes.io/hostname: "${domain}"`,
+      ]));
+    } else if (ingressInfo.structure === "hosts-array") {
+      lines.push(...emitNestedYaml(ingressInfo.keyPath, [
+        "enabled: true",
+        "hosts:",
+        `  - host: "${domain}"`,
+        "    paths:",
+        "      - path: /",
+        "annotations:",
+        `  external-dns.alpha.kubernetes.io/hostname: "${domain}"`,
+      ]));
+    } else {
+      lines.push(...emitNestedYaml(ingressInfo.keyPath, [
+        "enabled: true",
+        `hostname: "${domain}"`,
+        "annotations:",
+        `  external-dns.alpha.kubernetes.io/hostname: "${domain}"`,
+      ]));
+    }
   }
 
-  sections.push(`
-# --- Ingress ---
-ingress:
-  enabled: true
-  hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  # TODO: Adapt the keys above to match your chart's ingress structure
-  # (e.g. ingress.hosts[0].host, service.ingress.hostname, etc.)`);
+  // --- Password overrides (skip fields under disabled subchart keys) ---
+  const passwords = findPasswordPaths(parsed).filter(
+    (pw) => pw.path.length < 2 || !disabledKeys.has(pw.path[0]),
+  );
+  const pwLines = emitPasswordOverrides(passwords);
+  if (pwLines.length > 0) {
+    lines.push("");
+    lines.push(...pwLines);
+  }
 
-  if (originalValues) {
-    const conflictingKeys = ["ingress"];
-    if (hasPg) conflictingKeys.push("postgresql", "externalDatabase");
-    if (hasMysql) conflictingKeys.push("mysql", "externalDatabase");
-    if (hasRedis) conflictingKeys.push("redis");
-
-    let rewritten = rewritePasswords(originalValues);
-    rewritten = stripConflictingKeys(rewritten, conflictingKeys);
-    sections.push(`
-# =============================================================================
-# Original values.yaml from ${chartName}
-#
-# Passwords have been automatically replaced with Nuon input variables.
-# Review and customize the remaining values. Replace static values with
-# Nuon template variables where customer-specific configuration is needed.
-#
-# See https://docs.nuon.co/configuration-files for template variable syntax.
-# =============================================================================
-
-${rewritten}`);
-  } else {
-    sections.push(`
-# No values.yaml found in the chart source. Add your custom values below.
-`);
+  // If nothing beyond the header was generated
+  if (lines.length <= 2) {
+    lines.push("");
+    lines.push("# Add your Nuon template variable overrides below");
   }
 
   return {
     filename: `components/values/${chartName}/values.yaml`,
     language: "yaml",
-    content: sections.join("\n"),
+    content: lines.join("\n") + "\n",
   };
 }
 
