@@ -1,7 +1,7 @@
-import { useEffect, useState, useRef, useMemo } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
+import { useEffect, useState, useMemo } from "react";
+import Editor from "@monaco-editor/react";
 import { getFileContent } from "@/lib/github";
-import { NUON_VARIABLES, detectInfraDeps } from "@/lib/nuon";
+import { NUON_VARIABLES, detectInfraDeps, generateValuesFile } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions } from "@/lib/types";
 import { useTheme } from "@/hooks/use-theme";
 import {
@@ -50,16 +50,8 @@ export function StepValuesEditor({
   const { theme } = useTheme();
   const [loading, setLoading] = useState(!valuesYaml);
   const [copiedVar, setCopiedVar] = useState<string | null>(null);
-  const [inputName, setInputName] = useState("");
-  const [hasSelection, setHasSelection] = useState(false);
-  const [selectedText, setSelectedText] = useState("");
-  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [mobileSection, setMobileSection] = useState<"variables" | "configure" | null>(null);
-  const [showEditor, setShowEditor] = useState(true);
-  const [editorCanScroll, setEditorCanScroll] = useState(false);
-  const editorRef = useRef<any>(null);
-  const editorContainerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [showPreview, setShowPreview] = useState(false);
 
   const autoDetectedDeps = useMemo(
     () => detectInfraDeps(chart.dependencies || []),
@@ -72,62 +64,11 @@ export function StepValuesEditor({
     }
   }, [autoDetectedDeps, configOptions.infraDeps.length, dispatch]);
 
-  const handleEditorMount: OnMount = (editor) => {
-    editorRef.current = editor;
-    const checkScroll = () => {
-      const scrollTop = editor.getScrollTop();
-      const scrollHeight = editor.getScrollHeight();
-      const clientHeight = editor.getLayoutInfo().height;
-      setEditorCanScroll(scrollHeight - scrollTop - clientHeight > 20);
-    };
-    editor.onDidScrollChange(checkScroll);
-    editor.onDidChangeModelContent(checkScroll);
-    setTimeout(checkScroll, 500);
-    editor.onDidChangeCursorSelection(() => {
-      const selection = editor.getSelection();
-      const model = editor.getModel();
-      if (selection && !selection.isEmpty() && model) {
-        setHasSelection(true);
-        setSelectedText(model.getValueInRange(selection));
-        const endPos = selection.getEndPosition();
-        const coords = editor.getScrolledVisiblePosition(endPos);
-        if (coords && editorContainerRef.current) {
-          setPopoverPos({ top: coords.top + coords.height + 4, left: coords.left });
-        }
-      } else {
-        setHasSelection(false);
-        setSelectedText("");
-        setPopoverPos(null);
-      }
-    });
-  };
-
-  const confirmMakeInput = () => {
-    const editor = editorRef.current;
-    if (!editor || !inputName.trim()) return;
-    const selection = editor.getSelection();
-    if (!selection) return;
-    const template = `{{.nuon.install.inputs.${inputName.trim()}}}`;
-    editor.executeEdits("make-input", [{ range: selection, text: template }]);
-    dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
-    setInputName("");
-    editor.focus();
-  };
-
-  const insertAtCursor = (text: string) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const selection = editor.getSelection();
-    if (selection) {
-      editor.executeEdits("insert-variable", [
-        { range: selection, text, forceMoveMarkers: true },
-      ]);
-    }
-    dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
-    editor.focus();
-    setCopiedVar(text);
-    setTimeout(() => setCopiedVar(null), 1200);
-  };
+  // Live preview of generated values.yaml
+  const valuesPreview = useMemo(
+    () => generateValuesFile(chart.name || "app", valuesYaml || null, configOptions.infraDeps),
+    [chart.name, valuesYaml, configOptions.infraDeps]
+  );
 
   const copyToClipboard = (text: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -152,17 +93,11 @@ export function StepValuesEditor({
       .catch(() =>
         dispatch({
           type: "SET_VALUES",
-          yaml: "# No values.yaml found — start from scratch\n",
+          yaml: "# No values.yaml found\n",
         })
       )
       .finally(() => setLoading(false));
   }, [repo, chart, valuesYaml, dispatch]);
-
-  useEffect(() => {
-    if (hasSelection && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [hasSelection]);
 
   const categories = [...new Set(NUON_VARIABLES.map((v) => v.category))];
 
@@ -176,6 +111,28 @@ export function StepValuesEditor({
       </div>
     );
   }
+
+  // --- Context-aware toolbar subtitle ---
+  const depCount = configOptions.infraDeps.length;
+  const toolbarSubtitle = depCount > 0
+    ? `${depCount} infrastructure ${depCount === 1 ? "dependency" : "dependencies"} detected \u2014 review settings and generate`
+    : "Configure your deployment settings, then generate";
+
+  // --- "What we'll generate" summary ---
+  const hasDb = configOptions.infraDeps.some((d) => ["postgresql", "mysql", "mariadb"].includes(d));
+  const hasCache = configOptions.infraDeps.some((d) => ["redis", "memcached"].includes(d));
+  const hasS3 = configOptions.infraDeps.some((d) => ["minio", "s3"].includes(d));
+  const isNotBringCluster = configOptions.infraMode !== "bring-cluster";
+
+  const summaryItems: string[] = [];
+  if (isNotBringCluster) summaryItems.push("metadata, sandbox, runner, stack");
+  else summaryItems.push("metadata");
+  if (hasDb) summaryItems.push("RDS component + Terraform");
+  if (hasCache) summaryItems.push("ElastiCache component + Terraform");
+  if (hasS3) summaryItems.push("S3 component + Terraform");
+  summaryItems.push(`${chart.name} Helm component`);
+  summaryItems.push("values.yaml (minimal overrides)");
+  if (hasDb) summaryItems.push("db-credentials action");
 
   const variablesContent = (
     <div className="p-3 space-y-5">
@@ -201,13 +158,6 @@ export function StepValuesEditor({
                     {v.name}
                   </span>
                   <div className="flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); insertAtCursor(v.template); }}
-                      className="text-xs text-muted-foreground hover:text-primary transition-colors px-1"
-                      title="Insert at cursor"
-                    >
-                      Insert
-                    </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); copyToClipboard(v.template, e); }}
                       className="text-muted-foreground hover:text-foreground transition-colors"
@@ -344,41 +294,9 @@ export function StepValuesEditor({
     </div>
   );
 
-  const mobileEditorPanel = (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 min-h-0">
-        <Editor
-          defaultLanguage="yaml"
-          value={valuesYaml}
-          onChange={(value) =>
-            dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
-          }
-          theme={theme === "dark" ? "vs-dark" : "vs"}
-          onMount={handleEditorMount}
-          options={{
-            minimap: { enabled: false },
-            fontSize: 14,
-            fontFamily: "'Hack', monospace",
-            lineNumbers: "on",
-            scrollBeyondLastLine: false,
-            padding: { top: 12 },
-            wordWrap: "on",
-            renderLineHighlight: "none",
-            overviewRulerLanes: 0,
-            hideCursorInOverviewRuler: true,
-            scrollbar: {
-              verticalScrollbarSize: 6,
-              horizontalScrollbarSize: 6,
-            },
-          }}
-        />
-      </div>
-    </div>
-  );
-
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Editor toolbar */}
+      {/* Toolbar */}
       <div className="flex items-center justify-between px-4 sm:px-5 py-3 shrink-0 border-b border-border">
         <div className="flex items-center gap-3 min-w-0">
           <button
@@ -390,26 +308,26 @@ export function StepValuesEditor({
           </button>
           <span className="text-border shrink-0">|</span>
           <div className="min-w-0">
-            <span className="text-base font-mono text-foreground truncate block">
-              {chart.name}/values.yaml
+            <span className="text-base font-medium text-foreground truncate block">
+              {chart.name}
             </span>
             <span className="text-sm text-muted-foreground hidden sm:block">
-              Customize values for your deployment, then generate your config
+              {toolbarSubtitle}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-4">
           <button
-            onClick={() => setShowEditor(!showEditor)}
+            onClick={() => setShowPreview(!showPreview)}
             className={cn(
               "hidden md:flex items-center gap-1.5 px-3 h-9 rounded-lg border text-sm font-medium transition-colors",
-              showEditor
+              showPreview
                 ? "border-primary/40 bg-primary/10 text-primary"
                 : "border-border bg-card text-foreground hover:bg-muted"
             )}
           >
-            {showEditor ? <EyeOff className="w-3.5 h-3.5" /> : <Code2 className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{showEditor ? "Hide editor" : "Show editor"}</span>
+            {showPreview ? <EyeOff className="w-3.5 h-3.5" /> : <Code2 className="w-3.5 h-3.5" />}
+            <span className="hidden sm:inline">{showPreview ? "Hide preview" : "Preview output"}</span>
           </button>
           <button
             onClick={onNext}
@@ -421,10 +339,10 @@ export function StepValuesEditor({
         </div>
       </div>
 
-      {/* Desktop: resizable layout — Configure | Editor | Variables */}
+      {/* Desktop: resizable layout */}
       <div className="hidden md:flex flex-1 min-h-0 bg-card">
-        <ResizablePanelGroup direction="horizontal" key={showEditor ? "with-editor" : "no-editor"}>
-          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
+        <ResizablePanelGroup direction="horizontal" key={showPreview ? "with-preview" : "no-preview"}>
+          <ResizablePanel defaultSize={showPreview ? 22 : 50} minSize={16}>
             <div className="flex flex-col h-full">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -432,30 +350,40 @@ export function StepValuesEditor({
                 </span>
               </div>
               <div className="flex-1 overflow-y-auto">
+                {/* Generation summary */}
                 <div className="px-4 pt-3 pb-2">
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Set your deployment target and infrastructure options. These settings control which Nuon config files are generated.
-                  </p>
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+                    Will generate
+                  </div>
+                  <div className="space-y-0.5">
+                    {summaryItems.map((item, i) => (
+                      <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                        <span className="text-primary shrink-0 mt-px">+</span>
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
                 {configureContent}
               </div>
             </div>
           </ResizablePanel>
 
-          {showEditor && (
+          {showPreview && (
             <>
               <ResizableHandle />
               <ResizablePanel defaultSize={56} minSize={30}>
                 <div className="flex flex-col h-full border-l border-border">
-                  <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
+                  <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      values.yaml preview
+                    </span>
+                  </div>
+                  <div className="flex-1 min-h-0">
                     <Editor
                       defaultLanguage="yaml"
-                      value={valuesYaml}
-                      onChange={(value) =>
-                        dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
-                      }
+                      value={valuesPreview.content}
                       theme={theme === "dark" ? "vs-dark" : "vs"}
-                      onMount={handleEditorMount}
                       options={{
                         minimap: { enabled: false },
                         fontSize: 14,
@@ -464,41 +392,16 @@ export function StepValuesEditor({
                         scrollBeyondLastLine: false,
                         padding: { top: 12 },
                         wordWrap: "on",
-                        renderLineHighlight: "line",
+                        renderLineHighlight: "none",
                         overviewRulerLanes: 0,
                         hideCursorInOverviewRuler: true,
+                        readOnly: true,
                         scrollbar: {
                           verticalScrollbarSize: 6,
                           horizontalScrollbarSize: 6,
                         },
                       }}
                     />
-                    {editorCanScroll && (
-                      <div className="absolute bottom-0 left-0 right-3 h-10 bg-gradient-to-t from-[var(--vscode-editor-background,hsl(var(--card)))] to-transparent pointer-events-none z-10" />
-                    )}
-                    {hasSelection && popoverPos && (
-                      <div
-                        className="absolute z-50 bg-card border border-border rounded-lg shadow-lg p-2 flex items-center gap-2"
-                        style={{ top: popoverPos.top, left: Math.max(8, popoverPos.left) }}
-                      >
-                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">Make input:</span>
-                        <input
-                          ref={inputRef}
-                          value={inputName}
-                          onChange={(e) => setInputName(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && confirmMakeInput()}
-                          placeholder="input_name"
-                          className="h-6 w-28 px-2 text-xs font-mono bg-background border border-border rounded-md outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
-                        />
-                        <button
-                          onClick={confirmMakeInput}
-                          disabled={!inputName.trim()}
-                          className="px-2.5 h-6 text-[11px] font-medium rounded-md bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/90 transition-colors shrink-0"
-                        >
-                          Replace
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
               </ResizablePanel>
@@ -507,7 +410,7 @@ export function StepValuesEditor({
 
           <ResizableHandle />
 
-          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
+          <ResizablePanel defaultSize={showPreview ? 22 : 50} minSize={16}>
             <div className="flex flex-col h-full border-l border-border">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
                 <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -517,7 +420,7 @@ export function StepValuesEditor({
               <div className="flex-1 overflow-y-auto">
                 <div className="px-4 pt-3 pb-2">
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Click to copy a template variable, or use Insert to add it at the cursor position in the editor.
+                    Click to copy a template variable for use in your config files.
                   </p>
                 </div>
                 {variablesContent}
@@ -529,8 +432,19 @@ export function StepValuesEditor({
 
       {/* Mobile: stacked layout */}
       <div className="flex flex-col md:hidden flex-1 min-h-0">
-        <div className="flex-1 min-h-[250px] bg-card">
-          {mobileEditorPanel}
+        {/* Generation summary on mobile */}
+        <div className="px-4 py-3 bg-card border-b border-border">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+            Will generate
+          </div>
+          <div className="space-y-0.5">
+            {summaryItems.map((item, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <span className="text-primary shrink-0 mt-px">+</span>
+                <span>{item}</span>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Collapsible: Configure */}
