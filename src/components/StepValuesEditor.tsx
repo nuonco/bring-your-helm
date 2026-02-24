@@ -11,6 +11,8 @@ import {
   Copy,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Code2,
   EyeOff,
 } from "lucide-react";
@@ -56,6 +58,7 @@ export function StepValuesEditor({
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
   const [mobileSection, setMobileSection] = useState<"variables" | "configure" | null>(null);
   const [showEditor, setShowEditor] = useState(true);
+  const [showVariables, setShowVariables] = useState(true);
   const [editorCanScroll, setEditorCanScroll] = useState(false);
   const editorRef = useRef<any>(null);
   const editorContainerRef = useRef<HTMLDivElement>(null);
@@ -423,7 +426,10 @@ export function StepValuesEditor({
 
       {/* Desktop: resizable layout — Configure | Editor | Variables */}
       <div className="hidden md:flex flex-1 min-h-0 bg-card">
-        <ResizablePanelGroup direction="horizontal" key={showEditor ? "with-editor" : "no-editor"}>
+        <ResizablePanelGroup
+          direction="horizontal"
+          key={`${showEditor ? "e" : ""}${showVariables ? "v" : ""}`}
+        >
           <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
             <div className="flex flex-col h-full">
               <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
@@ -445,7 +451,10 @@ export function StepValuesEditor({
           {showEditor && (
             <>
               <ResizableHandle />
-              <ResizablePanel defaultSize={56} minSize={30}>
+              <ResizablePanel
+                defaultSize={showVariables ? 56 : 78}
+                minSize={30}
+              >
                 <div className="flex flex-col h-full border-l border-border">
                   <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
                     <Editor
@@ -507,23 +516,42 @@ export function StepValuesEditor({
 
           <ResizableHandle />
 
-          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
-            <div className="flex flex-col h-full border-l border-border">
-              <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Variables
-                </span>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <div className="px-4 pt-3 pb-2">
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Click to copy a template variable, or use Insert to add it at the cursor position in the editor.
-                  </p>
+          {showVariables ? (
+            <ResizablePanel defaultSize={22} minSize={14}>
+              <div className="flex flex-col h-full border-l border-border">
+                <div className="flex items-center justify-between px-4 h-10 border-b border-border bg-muted/20 shrink-0">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                    Variables
+                  </span>
+                  <button
+                    onClick={() => setShowVariables(false)}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Collapse variables"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                {variablesContent}
+                <div className="flex-1 overflow-y-auto">
+                  <div className="px-4 pt-3 pb-2">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Click to copy a template variable, or use Insert to add it at the cursor position in the editor.
+                    </p>
+                  </div>
+                  {variablesContent}
+                </div>
               </div>
-            </div>
-          </ResizablePanel>
+            </ResizablePanel>
+          ) : (
+            <ResizablePanel defaultSize={2} minSize={2} maxSize={2}>
+              <button
+                onClick={() => setShowVariables(true)}
+                className="h-full w-full flex items-center justify-center border-l border-border bg-muted/20 hover:bg-muted/40 transition-colors"
+                title="Expand variables"
+              >
+                <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
+              </button>
+            </ResizablePanel>
+          )}
         </ResizablePanelGroup>
       </div>
 
