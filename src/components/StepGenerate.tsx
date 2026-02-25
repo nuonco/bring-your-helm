@@ -190,16 +190,24 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
 
   const tree = useMemo(() => buildTree(files), [files]);
 
-  const [selectedFile, setSelectedFile] = useState<GeneratedFile>(files[0]);
+  const valuesFile = files.find((f) => f.filename.endsWith("values.yaml"));
+  const [selectedFile, setSelectedFile] = useState<GeneratedFile>(valuesFile || files[0]);
   const [highlighted, setHighlighted] = useState("");
   const [copied, setCopied] = useState(false);
-  const [showCode, setShowCode] = useState(false);
+  const [showCode, setShowCode] = useState(true);
   const appDirName = (configOptions.namespace || chart.name).toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
   useEffect(() => {
     if (!showCode) return;
     const lang = SHIKI_LANG_MAP[selectedFile.language] || "text";
-    codeToHtml(selectedFile.content, { lang, theme: "github-dark" }).then(setHighlighted);
+    codeToHtml(selectedFile.content, { lang, theme: "github-dark" }).then((html) => {
+      // Highlight Nuon template variables with a subtle indigo background
+      const withHighlights = html.replace(
+        /(\{\{[\s]*\.nuon\.[^}]+\}\})/g,
+        '<span style="background: rgba(99, 102, 241, 0.15); border-radius: 3px; padding: 0 2px;">$1</span>'
+      );
+      setHighlighted(withHighlights);
+    });
   }, [selectedFile, showCode]);
 
   useEffect(() => {
