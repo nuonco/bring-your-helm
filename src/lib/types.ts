@@ -33,7 +33,7 @@ export interface GeneratedFile {
 
 export interface ConfigOptions {
   cloudProvider: "aws" | "azure";
-  infraMode: "default" | "bring-vpc" | "bring-cluster";
+  infraMode: "default" | "bring-vpc";
   namespace: string;
   configRepo: string;
   infraDeps: string[];

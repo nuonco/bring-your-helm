@@ -1,8 +1,9 @@
 import { useMemo, useState, useEffect, useCallback } from "react";
 import { codeToHtml } from "shiki";
-import { generateNuonConfig } from "@/lib/nuon";
+import { generateNuonConfig, validateGeneratedConfig } from "@/lib/nuon";
+import type { ValidationWarning } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions } from "@/lib/types";
-import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff, AlertTriangle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import JSZip from "jszip";
 
@@ -180,13 +181,20 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
     [repo, chart, valuesYaml, configOptions]
   );
 
+  const validationWarnings = useMemo(
+    () => validateGeneratedConfig(files, configOptions),
+    [files, configOptions]
+  );
+  const errors = validationWarnings.filter((w) => w.severity === "error");
+  const warnings = validationWarnings.filter((w) => w.severity === "warning");
+
   const tree = useMemo(() => buildTree(files), [files]);
 
   const [selectedFile, setSelectedFile] = useState<GeneratedFile>(files[0]);
   const [highlighted, setHighlighted] = useState("");
   const [copied, setCopied] = useState(false);
   const [showCode, setShowCode] = useState(false);
-  const appDirName = chart.name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  const appDirName = (configOptions.namespace || chart.name).toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
   useEffect(() => {
     if (!showCode) return;
@@ -215,16 +223,16 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   const downloadZip = useCallback(async () => {
     const zip = new JSZip();
     for (const file of files) {
-      zip.file(file.filename, file.content);
+      zip.file(`${appDirName}/${file.filename}`, file.content);
     }
     const blob = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${chart.name}-nuon-config.zip`;
+    a.download = `${appDirName}-nuon-config.zip`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [files, chart.name]);
+  }, [files, appDirName]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(selectedFile.content);
@@ -364,12 +372,40 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
               "py-6",
               showCode ? "px-4" : "px-6 max-w-xl mx-auto"
             )}>
+              {errors.length > 0 && (
+                <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <XCircle className="w-4 h-4 text-destructive shrink-0" />
+                    <span className="text-sm font-medium text-destructive">Action needed</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {errors.map((e, i) => (
+                      <li key={i} className="text-sm text-destructive/80 pl-6">{e.message}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {warnings.length > 0 && (
+                <div className="mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 shrink-0" />
+                    <span className="text-sm font-medium text-yellow-600 dark:text-yellow-400">Heads up</span>
+                  </div>
+                  <ul className="space-y-1">
+                    {warnings.map((w, i) => (
+                      <li key={i} className="text-sm text-yellow-600/80 dark:text-yellow-400/80 pl-6">
+                        {w.message}{w.file && <span className="font-mono text-xs ml-1">({w.file})</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <ol className="list-none">
                 <NextStep number={1} icon={Archive} title="Download and extract">
                   <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
                     Hit <strong className="text-foreground">Download ZIP</strong> above, then extract into a new repo:
                   </p>
-                  <CodeSnippet text={`mkdir ${appDirName} && cd ${appDirName}\nunzip ~\/Downloads\/${chart.name}-nuon-config.zip`} />
+                  <CodeSnippet text={`unzip ~\/Downloads\/${appDirName}-nuon-config.zip\ncd ${appDirName}`} />
                 </NextStep>
 
                 <NextStep number={2} icon={Pencil} title="Review and customize">

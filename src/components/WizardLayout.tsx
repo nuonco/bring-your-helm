@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
-import { Sun, Moon, Share2 } from "lucide-react";
+import { Sun, Moon, Share2, BookOpen } from "lucide-react";
 import { useState, useCallback } from "react";
 
 function NuonLogo({ className }: { className?: string }) {
@@ -88,6 +88,15 @@ export function WizardLayout({
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <a
+              href="https://docs.nuon.co/configuration-files"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="h-8 w-8 sm:w-auto sm:px-3 rounded-lg border border-border bg-card flex items-center justify-center sm:justify-start gap-1.5 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              <BookOpen className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden sm:inline">Docs</span>
+            </a>
             <button
               onClick={handleShare}
               className="h-8 w-8 sm:w-auto sm:px-3 rounded-lg border border-border bg-card flex items-center justify-center sm:justify-start gap-1.5 text-sm font-medium text-foreground hover:bg-muted transition-colors"

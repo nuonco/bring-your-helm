@@ -1,4 +1,5 @@
 import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency } from "./types";
+import yaml from "js-yaml";
 
 // ---------------------------------------------------------------------------
 // Nuon template variables for the sidebar
@@ -48,8 +49,6 @@ export const KNOWN_INFRA_DEPS: Record<string, { component: string; engine: strin
   minio: { component: "s3", engine: null, label: "S3-compatible Storage" },
 };
 
-const PASSWORD_PATTERN = /^(\s*)(password|adminPassword|admin-password|auth\.password|postgresqlPassword|postgresPassword|rootPassword|auth\.postgresPassword|auth\.adminPassword|repmgrPassword|srCheckPassword|mariadbPassword|mysqlPassword|redisPassword):\s*(.+)$/gm;
-
 export function detectInfraDeps(dependencies: ChartDependency[]): string[] {
   const detected: string[] = [];
   for (const dep of dependencies) {
@@ -69,40 +68,124 @@ function esc(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function rewritePasswords(values: string): string {
-  return values.replace(PASSWORD_PATTERN, (_, indent, key) =>
-    `${indent}${key}: "{{ .nuon.inputs.inputs.admin_password }}"`
-  );
+// ---------------------------------------------------------------------------
+// YAML analysis helpers for minimal override generation
+// ---------------------------------------------------------------------------
+
+const INFRA_KEY_PATTERNS: Record<string, RegExp> = {
+  postgresql: /^(postgresql|postgres|postgresql-ha)$/i,
+  mysql: /^(mysql|mariadb|mysql-ha)$/i,
+  redis: /^(redis|redis-cluster|redis-master|valkey|valkey-cluster)$/i,
+  memcached: /^(memcached)$/i,
+  minio: /^(minio|s3)$/i,
+};
+
+interface IngressInfo {
+  type: "flat" | "hosts-array";
+  key: string;
 }
 
-function stripConflictingKeys(values: string, keysToStrip: string[]): string {
-  const lines = values.split("\n");
-  const result: string[] = [];
-  let skipping = false;
+interface PasswordField {
+  path: string[];
+}
 
-  for (const line of lines) {
-    const stripped = line.trim();
-    if (stripped && !stripped.startsWith("#") && !line.startsWith(" ") && !line.startsWith("\t")) {
-      const keyName = stripped.includes(":") ? stripped.split(":")[0].trim() : "";
-      if (keysToStrip.includes(keyName)) {
-        skipping = true;
-        result.push(`# [${keyName}: overridden by Nuon wiring above]`);
-        continue;
-      } else {
-        skipping = false;
-      }
-    }
-
-    if (skipping) {
-      if (!stripped || line.startsWith(" ") || line.startsWith("\t") || stripped.startsWith("#")) {
-        continue;
-      } else {
-        skipping = false;
-      }
-    }
-    result.push(line);
+function findInfraKeys(
+  parsed: Record<string, unknown>,
+  infraDeps: string[],
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const topKeys = Object.keys(parsed);
+  for (const dep of infraDeps) {
+    const pattern = INFRA_KEY_PATTERNS[dep];
+    if (!pattern) continue;
+    const matches = topKeys.filter((k) => pattern.test(k));
+    if (matches.length > 0) result.set(dep, matches);
   }
-  return result.join("\n");
+  return result;
+}
+
+function detectIngressStructure(
+  parsed: Record<string, unknown>,
+): IngressInfo | null {
+  const ingress = parsed.ingress as Record<string, unknown> | undefined;
+  if (ingress && typeof ingress === "object") {
+    if (Array.isArray(ingress.hosts))
+      return { type: "hosts-array", key: "ingress" };
+    if ("hostname" in ingress) return { type: "flat", key: "ingress" };
+    return { type: "hosts-array", key: "ingress" };
+  }
+  for (const key of Object.keys(parsed)) {
+    const val = parsed[key] as Record<string, unknown> | undefined;
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      const inner = val.ingress as Record<string, unknown> | undefined;
+      if (inner && typeof inner === "object") {
+        if (Array.isArray(inner.hosts))
+          return { type: "hosts-array", key: `${key}.ingress` };
+        if ("hostname" in inner)
+          return { type: "flat", key: `${key}.ingress` };
+      }
+    }
+  }
+  return null;
+}
+
+function findPasswordPaths(
+  obj: unknown,
+  path: string[] = [],
+): PasswordField[] {
+  const results: PasswordField[] = [];
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return results;
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const currentPath = [...path, key];
+    if (typeof value === "string" || typeof value === "number") {
+      if (key.toLowerCase().includes("password")) {
+        results.push({ path: currentPath });
+      }
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      results.push(...findPasswordPaths(value, currentPath));
+    }
+  }
+  return results;
+}
+
+function emitNestedYaml(
+  keyPath: string[],
+  value: string,
+  indent: number = 0,
+): string {
+  const prefix = "  ".repeat(indent);
+  if (keyPath.length === 1) return `${prefix}${keyPath[0]}: ${value}`;
+  return `${prefix}${keyPath[0]}:\n${emitNestedYaml(keyPath.slice(1), value, indent + 1)}`;
+}
+
+function emitPasswordOverrides(fields: PasswordField[]): string {
+  if (fields.length === 0) return "";
+  const lines: string[] = [];
+  const tree: Record<string, unknown> = {};
+  for (const field of fields) {
+    let node: Record<string, unknown> = tree;
+    for (let i = 0; i < field.path.length - 1; i++) {
+      if (!(field.path[i] in node))
+        node[field.path[i]] = {} as Record<string, unknown>;
+      node = node[field.path[i]] as Record<string, unknown>;
+    }
+    node[field.path[field.path.length - 1]] =
+      '"{{ .nuon.inputs.inputs.admin_password }}"';
+  }
+  function serialize(obj: Record<string, unknown>, indent: number): void {
+    for (const [key, val] of Object.entries(obj)) {
+      const prefix = "  ".repeat(indent);
+      if (typeof val === "string") {
+        lines.push(`${prefix}${key}: ${val}`);
+      } else {
+        lines.push(`${prefix}${key}:`);
+        serialize(val as Record<string, unknown>, indent + 1);
+      }
+    }
+  }
+  serialize(tree, 0);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -654,102 +737,127 @@ TARGET_NAMESPACE = "${esc(namespace)}"`,
   };
 }
 
-function generateValuesFile(
+export function generateValuesFile(
   chartName: string,
   originalValues: string | null,
   infraDeps: string[],
 ): GeneratedFile {
   const sections: string[] = [];
+  const HOSTNAME = "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}";
 
-  sections.push(`# =============================================================================
-# Nuon-templated values for ${chartName}
-# =============================================================================
-#
-# TODO: Review the sections below. Wire Nuon template variables to the
-# Helm values that should be configurable per customer install.
-#
-# Template variable docs: https://docs.nuon.co/configuration-files
-# =============================================================================`);
+  sections.push(
+    `# Nuon values override for ${chartName}`,
+    `# Docs: https://docs.nuon.co/configuration-files`,
+  );
+
+  let parsed: Record<string, unknown> = {};
+  if (originalValues) {
+    try {
+      const loaded = yaml.load(originalValues);
+      if (loaded && typeof loaded === "object") parsed = loaded as Record<string, unknown>;
+    } catch { /* fall through with empty parsed */ }
+  }
+
+  const infraKeyMap = findInfraKeys(parsed, infraDeps);
+  const disabledKeys = new Set<string>();
 
   const hasPg = infraDeps.includes("postgresql");
   const hasMysql = infraDeps.some((d) => ["mysql", "mariadb"].includes(d));
   const hasRedis = infraDeps.includes("redis");
 
+  // Disable bundled subcharts using actual key names from values.yaml
   if (hasPg) {
-    sections.push(`
-# --- PostgreSQL: disable bundled subchart, use Nuon-managed RDS ---
-postgresql:
-  enabled: false
-
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: {{ .nuon.components.rds.outputs.db_instance_port }}
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials — use the Kubernetes secret created by the
-  # db-credentials action, or reference inputs for username/password
-  # existingSecret: "${chartName}-db-credentials"
-  # existingSecretPasswordKey: "password"`);
+    const keys = infraKeyMap.get("postgresql") || ["postgresql"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalDatabase:",
+      `  host: "{{ .nuon.components.rds.outputs.address }}"`,
+      `  port: {{ .nuon.components.rds.outputs.db_instance_port }}`,
+      `  database: "{{ .nuon.inputs.inputs.db_name }}"`,
+      `  existingSecret: "${chartName}-db-credentials"`,
+      `  existingSecretPasswordKey: "password"`,
+    );
   }
 
   if (hasMysql) {
-    sections.push(`
-# --- MySQL: disable bundled subchart, use Nuon-managed RDS ---
-mysql:
-  enabled: false
-
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: 3306
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials from the db-credentials action`);
+    const keys = infraKeyMap.get("mysql") || ["mysql"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalDatabase:",
+      `  host: "{{ .nuon.components.rds.outputs.address }}"`,
+      `  port: 3306`,
+      `  database: "{{ .nuon.inputs.inputs.db_name }}"`,
+      `  existingSecret: "${chartName}-db-credentials"`,
+      `  existingSecretPasswordKey: "password"`,
+    );
   }
 
   if (hasRedis) {
-    sections.push(`
-# --- Redis: disable bundled subchart, use Nuon-managed ElastiCache ---
-redis:
-  enabled: false
-
-# TODO: wire external Redis connection using your chart's key structure
-# externalRedis:
-#   host: "{{ .nuon.components.elasticache.outputs.endpoint }}"
-#   port: 6379`);
+    const keys = infraKeyMap.get("redis") || ["redis"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalRedis:",
+      `  host: "{{ .nuon.components.elasticache.outputs.endpoint }}"`,
+      `  port: 6379`,
+    );
   }
 
-  sections.push(`
-# --- Ingress ---
-ingress:
-  enabled: true
-  hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  # TODO: Adapt the keys above to match your chart's ingress structure
-  # (e.g. ingress.hosts[0].host, service.ingress.hostname, etc.)`);
-
-  if (originalValues) {
-    const conflictingKeys = ["ingress"];
-    if (hasPg) conflictingKeys.push("postgresql", "externalDatabase");
-    if (hasMysql) conflictingKeys.push("mysql", "externalDatabase");
-    if (hasRedis) conflictingKeys.push("redis");
-
-    let rewritten = rewritePasswords(originalValues);
-    rewritten = stripConflictingKeys(rewritten, conflictingKeys);
-    sections.push(`
-# =============================================================================
-# Original values.yaml from ${chartName}
-#
-# Passwords have been automatically replaced with Nuon input variables.
-# Review and customize the remaining values. Replace static values with
-# Nuon template variables where customer-specific configuration is needed.
-#
-# See https://docs.nuon.co/configuration-files for template variable syntax.
-# =============================================================================
-
-${rewritten}`);
+  // Ingress — match the chart's actual structure
+  const ingressInfo = detectIngressStructure(parsed);
+  if (ingressInfo?.type === "flat") {
+    const parts = ingressInfo.key.split(".");
+    const inner = [
+      `enabled: true`,
+      `hostname: "${HOSTNAME}"`,
+      `annotations:`,
+      `  external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    ];
+    sections.push("", emitNestedYaml(parts, "", 0).replace(/:\s*$/, ":"));
+    for (const line of inner) sections.push(`${"  ".repeat(parts.length)}${line}`);
+  } else if (ingressInfo?.type === "hosts-array") {
+    const parts = ingressInfo.key.split(".");
+    const inner = [
+      `enabled: true`,
+      `hosts:`,
+      `  - host: "${HOSTNAME}"`,
+      `    paths:`,
+      `      - path: /`,
+      `        pathType: ImplementationSpecific`,
+      `annotations:`,
+      `  external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    ];
+    sections.push("", emitNestedYaml(parts, "", 0).replace(/:\s*$/, ":"));
+    for (const line of inner) sections.push(`${"  ".repeat(parts.length)}${line}`);
   } else {
-    sections.push(`
-# No values.yaml found in the chart source. Add your custom values below.
-`);
+    sections.push(
+      "",
+      "ingress:",
+      "  enabled: true",
+      `  hostname: "${HOSTNAME}"`,
+      "  annotations:",
+      `    external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    );
+  }
+
+  // Password overrides — skip fields under disabled subchart keys
+  const passwords = findPasswordPaths(parsed).filter(
+    (p) => !disabledKeys.has(p.path[0]),
+  );
+  if (passwords.length > 0) {
+    sections.push("");
+    sections.push(emitPasswordOverrides(passwords));
   }
 
   return {
@@ -773,7 +881,6 @@ export function generateNuonConfig(
   const description = chart.description || `Nuon BYOC config for ${chartName}`;
   const ns = options.namespace || chartName;
   const provider = options.cloudProvider || "aws";
-  const infraMode = options.infraMode || "default";
   const repoRef = options.configRepo || "YOUR_ORG/YOUR_REPO";
   const [org, repo] = repoFullName.split("/");
   const branch = "main";
@@ -787,13 +894,11 @@ export function generateNuonConfig(
   files.push(generateMetadata(chartName, description));
   files.push(generateInputs(chartName, allDeps));
 
-  if (infraMode !== "bring-cluster") {
-    files.push(generateSandbox(provider));
-    files.push(generateRunner(provider));
-    files.push(generateStack(chartName));
-    files.push(generateBreakGlass());
-    files.push(...generatePermissions());
-  }
+  files.push(generateSandbox(provider));
+  files.push(generateRunner(provider));
+  files.push(generateStack(chartName));
+  files.push(generateBreakGlass());
+  files.push(...generatePermissions());
 
   const hasDb = allDeps.some((d) => ["postgresql", "mysql", "mariadb"].includes(d));
   const hasCache = allDeps.some((d) => ["redis", "memcached"].includes(d));
@@ -834,4 +939,55 @@ export function generateNuonConfig(
   }
 
   return files;
+}
+
+// ---------------------------------------------------------------------------
+// Config validation
+// ---------------------------------------------------------------------------
+
+export interface ValidationWarning {
+  severity: "error" | "warning";
+  message: string;
+  file?: string;
+}
+
+export function validateGeneratedConfig(
+  files: GeneratedFile[],
+  options: ConfigOptions,
+): ValidationWarning[] {
+  const warnings: ValidationWarning[] = [];
+
+  const hasInfraComponents = files.some(
+    (f) => f.filename.includes("-rds.toml") ||
+           f.filename.includes("-elasticache.toml") ||
+           f.filename.includes("-s3.toml"),
+  );
+
+  if (!options.configRepo && hasInfraComponents) {
+    warnings.push({
+      severity: "error",
+      message: "Config repository not set — infrastructure component TOML files contain \"YOUR_ORG/YOUR_REPO\" placeholder",
+    });
+  }
+
+  for (const file of files) {
+    if (!options.configRepo && file.content.includes("YOUR_ORG/YOUR_REPO")) continue;
+    const todoMatches = file.content.match(/# TODO/g);
+    if (todoMatches) {
+      warnings.push({
+        severity: "warning",
+        message: `${todoMatches.length} TODO item${todoMatches.length > 1 ? "s" : ""} to review`,
+        file: file.filename,
+      });
+    }
+  }
+
+  if (!options.namespace) {
+    warnings.push({
+      severity: "warning",
+      message: "Namespace not set — will default to chart name",
+    });
+  }
+
+  return warnings;
 }
