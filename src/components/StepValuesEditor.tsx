@@ -16,6 +16,7 @@ import {
   Code2,
   EyeOff,
   CheckCircle2,
+  Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -23,6 +24,11 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 
 const INFRA_DEP_OPTIONS = [
   { id: "postgresql", label: "PostgreSQL (RDS)" },
@@ -107,21 +113,24 @@ export function StepValuesEditor({
   // Compute "Will generate" summary
   const depCount = configOptions.infraDeps.length;
   const toolbarSubtitle = depCount > 0
-    ? `${depCount} infrastructure dependenc${depCount === 1 ? "y" : "ies"} detected — review settings and generate`
-    : "Configure your deployment settings, then generate";
+    ? `${depCount} infrastructure dependenc${depCount === 1 ? "y" : "ies"} detected from this chart — review and adjust below`
+    : "Choose your cloud provider and infrastructure, then hit Generate";
 
   const summaryItems = useMemo(() => {
-    const items: string[] = ["metadata.toml, sandbox.toml, runner.toml, inputs.toml"];
+    const items: { label: string; desc: string }[] = [
+      { label: "metadata.toml, sandbox.toml, runner.toml", desc: "App identity, sandbox environment, and runner config" },
+      { label: "inputs.toml", desc: "Customer-facing settings (subdomain, passwords, etc.)" },
+    ];
     const hasDb = configOptions.infraDeps.some((d) => ["postgresql", "mysql", "mariadb"].includes(d));
     const hasCache = configOptions.infraDeps.some((d) => ["redis", "memcached"].includes(d));
     const hasS3 = configOptions.infraDeps.some((d) => ["minio", "s3"].includes(d));
     let n = 1;
-    if (hasDb) { items.push(`${n}-rds.toml + Terraform (database)`); n++; }
-    if (hasCache) { items.push(`${n}-elasticache.toml + Terraform (cache)`); n++; }
-    if (hasS3) { items.push(`${n}-s3.toml + Terraform (storage)`); n++; }
-    items.push(`${n}-${chart.name}.toml (Helm component)`);
-    items.push("values.yaml (minimal overrides)");
-    if (hasDb) items.push("db-credentials action");
+    if (hasDb) { items.push({ label: `${n}-rds.toml + Terraform`, desc: "Provisions a managed database in the customer's cloud" }); n++; }
+    if (hasCache) { items.push({ label: `${n}-elasticache.toml + Terraform`, desc: "Provisions a managed cache in the customer's cloud" }); n++; }
+    if (hasS3) { items.push({ label: `${n}-s3.toml + Terraform`, desc: "Provisions object storage in the customer's cloud" }); n++; }
+    items.push({ label: `${n}-${chart.name}.toml`, desc: "Helm release — deploys your app" });
+    items.push({ label: "values.yaml", desc: "Helm values with Nuon template variables wired in" });
+    if (hasDb) items.push({ label: "db-credentials action", desc: "Copies database secrets into Kubernetes after provisioning" });
     return items;
   }, [configOptions.infraDeps, chart.name]);
 
@@ -189,8 +198,18 @@ export function StepValuesEditor({
     <div className="p-4 space-y-5">
       {/* Cloud Provider */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Cloud Provider
+        <div className="flex items-center gap-1.5 mb-2">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            Cloud Provider
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="w-3 h-3 text-muted-foreground/60 cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[220px] text-xs leading-relaxed">
+              The cloud where your customers' instances will run. Each install gets its own isolated infrastructure.
+            </TooltipContent>
+          </Tooltip>
         </div>
         <div className="space-y-0.5">
           {([["aws", "AWS (EKS)"], ["azure", "Azure (AKS)"]] as const).map(([value, label]) => (
@@ -215,20 +234,36 @@ export function StepValuesEditor({
 
       {/* Infrastructure Mode */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Infrastructure Mode
+        <div className="flex items-center gap-1.5 mb-2">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            Infrastructure Mode
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="w-3 h-3 text-muted-foreground/60 cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[240px] text-xs leading-relaxed">
+              Controls whether Nuon creates a new VPC for each install or deploys into one the customer provides.
+            </TooltipContent>
+          </Tooltip>
         </div>
-        <div className="space-y-0.5">
-          {([["default", "Default"], ["bring-vpc", "Bring own VPC"]] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
-              <input
-                type="radio"
-                name="infraMode"
-                checked={configOptions.infraMode === value}
-                onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraMode: value } })}
-                className="accent-primary"
-              />
-              <span className="text-sm text-foreground">{label}</span>
+        <div className="space-y-1">
+          {([
+            ["default", "Default", "Nuon creates a new VPC, subnets, and cluster per install"],
+            ["bring-vpc", "Bring own VPC", "Customer provides their existing VPC — you deploy into it"],
+          ] as const).map(([value, label, desc]) => (
+            <label key={value} className="flex flex-col px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
+              <div className="flex items-center gap-2.5">
+                <input
+                  type="radio"
+                  name="infraMode"
+                  checked={configOptions.infraMode === value}
+                  onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraMode: value } })}
+                  className="accent-primary"
+                />
+                <span className="text-sm text-foreground">{label}</span>
+              </div>
+              <span className="text-xs text-muted-foreground ml-[26px] mt-0.5">{desc}</span>
             </label>
           ))}
         </div>
@@ -236,12 +271,22 @@ export function StepValuesEditor({
 
       {/* Infrastructure Dependencies */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
-          Infrastructure Dependencies
+        <div className="flex items-center gap-1.5 mb-1">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            Infrastructure Dependencies
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Info className="w-3 h-3 text-muted-foreground/60 cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[260px] text-xs leading-relaxed">
+              Cloud-managed services your app needs. Nuon provisions these in each customer's cloud account alongside your app.
+            </TooltipContent>
+          </Tooltip>
         </div>
         {autoDetectedDeps.length > 0 && (
           <p className="text-xs text-primary mb-2">
-            {autoDetectedDeps.length} detected from Chart.yaml
+            {autoDetectedDeps.length} auto-detected — uncheck any you don't need
           </p>
         )}
         <div className="space-y-1.5">
@@ -268,9 +313,12 @@ export function StepValuesEditor({
 
       {/* Namespace */}
       <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
           Namespace
         </div>
+        <p className="text-xs text-muted-foreground mb-2">
+          The Kubernetes namespace for your app in each customer's cluster.
+        </p>
         <input
           type="text"
           value={configOptions.namespace}
@@ -286,7 +334,7 @@ export function StepValuesEditor({
           Config Repository
         </div>
         <p className="text-xs text-muted-foreground mb-2">
-          The GitHub repo where you'll push this config.
+          The GitHub repo where you'll store these files. Nuon syncs from this repo to deploy your app.
           {!configOptions.configRepo && (
             <span className="text-muted-foreground/60"> Leave blank to fill in later.</span>
           )}
@@ -307,9 +355,12 @@ export function StepValuesEditor({
         </div>
         <div className="space-y-1">
           {summaryItems.map((item) => (
-            <div key={item} className="flex items-start gap-2 text-xs text-muted-foreground">
+            <div key={item.label} className="flex items-start gap-2 text-xs text-muted-foreground">
               <CheckCircle2 className="w-3 h-3 text-primary/60 mt-0.5 shrink-0" />
-              <span>{item}</span>
+              <div>
+                <span className="text-foreground font-medium">{item.label}</span>
+                <span className="ml-1">— {item.desc}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -378,7 +429,7 @@ export function StepValuesEditor({
               <div className="flex-1 overflow-y-auto">
                 <div className="px-4 pt-3 pb-2">
                   <p className="text-xs text-muted-foreground leading-relaxed">
-                    Review detected dependencies and configure your deployment target.
+                    These settings determine what cloud infrastructure Nuon provisions for each customer install.
                     {" "}<a href="https://docs.nuon.co/configuration-files" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Config file reference</a>
                   </p>
                 </div>
@@ -449,7 +500,7 @@ export function StepValuesEditor({
                 <div className="flex-1 overflow-y-auto">
                   <div className="px-4 pt-3 pb-2">
                     <p className="text-xs text-muted-foreground leading-relaxed">
-                      Click to copy a template variable.
+                      Template variables reference dynamic values (like the customer's region or database endpoint) in your config files. Click to copy.
                     </p>
                   </div>
                   {variablesContent}
@@ -481,9 +532,12 @@ export function StepValuesEditor({
               </div>
               <div className="space-y-1">
                 {summaryItems.map((item) => (
-                  <div key={item} className="flex items-start gap-2 text-xs text-muted-foreground">
+                  <div key={item.label} className="flex items-start gap-2 text-xs text-muted-foreground">
                     <CheckCircle2 className="w-3 h-3 text-primary/60 mt-0.5 shrink-0" />
-                    <span>{item}</span>
+                    <div>
+                      <span className="text-foreground font-medium">{item.label}</span>
+                      <span className="ml-1">— {item.desc}</span>
+                    </div>
                   </div>
                 ))}
               </div>

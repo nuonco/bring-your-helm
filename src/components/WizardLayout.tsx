@@ -85,6 +85,11 @@ export function WizardLayout({
               <NuonLogo className="w-3.5 h-3.5" />
               <span className="text-sm">Powered by Nuon</span>
             </a>
+            {isLanding && (
+              <span className="hidden sm:inline text-sm text-muted-foreground ml-2">
+                — Turn a Helm chart into a deploy-anywhere config
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2">

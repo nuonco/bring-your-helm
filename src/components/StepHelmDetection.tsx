@@ -39,7 +39,7 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
       <div className="flex flex-col items-center text-center">
         <Loader2 className="w-5 h-5 text-primary animate-spin mb-4" />
         <p className="text-base text-muted-foreground">
-          Looking for charts in <span className="text-foreground">{repo.full_name}</span>
+          Scanning <span className="text-foreground">{repo.full_name}</span> for Helm charts...
         </p>
       </div>
     );
@@ -65,9 +65,9 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
   if (charts.length === 0) {
     return (
       <div className="flex flex-col items-center text-center">
-        <p className="text-base text-foreground mb-1">No charts found</p>
+        <p className="text-base text-foreground mb-1">No Helm charts found</p>
         <p className="text-base text-muted-foreground mb-6">
-          This repo doesn't seem to contain a <code className="font-mono text-sm">Chart.yaml</code>.
+          We couldn't find a <code className="font-mono text-sm">Chart.yaml</code> in this repository. Make sure it contains a Helm chart — look for a directory with <code className="font-mono text-sm">Chart.yaml</code> and a <code className="font-mono text-sm">templates/</code> folder.
         </p>
         <button onClick={onBack} className="text-base text-muted-foreground hover:text-foreground transition-colors flex items-center gap-2 group">
           <span className="w-7 h-7 rounded-full border border-border group-hover:border-foreground/30 group-hover:bg-muted flex items-center justify-center transition-all">
@@ -83,10 +83,10 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
     <div>
       <div className="text-center mb-6 sm:mb-8">
         <h2 className="text-xl sm:text-2xl font-medium text-foreground mb-1.5 break-all">
-          Which chart from {repo.full_name}?
+          Select a chart from {repo.full_name}
         </h2>
         <p className="text-base text-muted-foreground">
-          {charts.length} chart{charts.length !== 1 ? "s" : ""} found
+          We found {charts.length} chart{charts.length !== 1 ? "s" : ""} — pick the one that packages your application
         </p>
       </div>
 
@@ -106,6 +106,11 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
                   <div className="text-sm text-muted-foreground font-mono mt-0.5">{chart.path}/</div>
                   {chart.description && (
                     <div className="text-sm text-muted-foreground mt-1.5 leading-relaxed">{chart.description}</div>
+                  )}
+                  {chart.dependencies && chart.dependencies.length > 0 && (
+                    <div className="text-xs text-primary mt-1">
+                      {chart.dependencies.length} dependenc{chart.dependencies.length === 1 ? "y" : "ies"} (e.g. database, cache) — we'll detect these next
+                    </div>
                   )}
                 </div>
                 <div className="flex items-center gap-3 shrink-0">

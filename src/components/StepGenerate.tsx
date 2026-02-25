@@ -270,7 +270,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
               Your config is ready
             </span>
             <span className="text-sm text-muted-foreground hidden sm:block">
-              {files.length} files generated for {chart.name}
+              {files.length} files generated — everything Nuon needs to deploy {chart.name} into any customer's cloud
             </span>
           </div>
         </div>
@@ -372,6 +372,12 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
               "py-6",
               showCode ? "px-4" : "px-6 max-w-xl mx-auto"
             )}>
+              <p className="text-sm text-muted-foreground leading-relaxed mb-5">
+                These files define your app for{" "}
+                <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon</a>,
+                a platform that deploys your software into each customer's own cloud account.
+                Push them to a GitHub repo, connect it to Nuon, and you're ready to create your first customer install.
+              </p>
               {errors.length > 0 && (
                 <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
                   <div className="flex items-center gap-2 mb-1.5">
@@ -409,6 +415,9 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 </NextStep>
 
                 <NextStep number={2} icon={Pencil} title="Review and customize">
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                    The generated files are a starting point. You'll want to customize them for your app:
+                  </p>
                   <ul className="text-sm text-muted-foreground leading-relaxed space-y-2">
                     <li className="flex gap-2">
                       <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
@@ -427,21 +436,21 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
 
                 <NextStep number={3} icon={FolderTree} title="Push to GitHub">
                   <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Initialize a repo and push — the directory name must match your Nuon app name:
+                    Nuon reads your config from a GitHub repo. Push these files so Nuon can sync them:
                   </p>
                   <CodeSnippet text={`git init && git add .\ngit commit -m "initial nuon config for ${chart.name}"\ngit remote add origin git@github.com:your-org/${appDirName}.git\ngit push -u origin main`} />
                 </NextStep>
 
-                <NextStep number={4} icon={Rocket} title="Create and sync your app">
+                <NextStep number={4} icon={Rocket} title="Connect to Nuon">
                   <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Use the <a href="https://docs.nuon.co/cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a> to create the app and sync the config:
+                    Install the <a href="https://docs.nuon.co/cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a>, then create your app and point it at your config repo:
                   </p>
                   <CodeSnippet text={`nuon apps create -n ${appDirName}\nnuon apps sync`} />
                 </NextStep>
 
                 <NextStep number={5} icon={ShieldCheck} title="Validate and deploy" isLast>
                   <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Validate that everything is wired correctly, then create an install:
+                    Validate checks that your config is correct. Then create your first install — this provisions real infrastructure in a customer's cloud:
                   </p>
                   <CodeSnippet text={`nuon apps validate\nnuon installs create -a ${appDirName} -n my-first-install`} />
                 </NextStep>
