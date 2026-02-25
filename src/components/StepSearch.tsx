@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { ArrowRight, Loader2, Star, Search, Plus, Package } from "lucide-react";
+import { ArrowRight, Loader2, Star, Search, Plus, Package, ChevronDown, Cloud, Download, FileText } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { searchRepos, parseRepoUrl, getRepoByFullName } from "@/lib/github";
 import type { GitHubRepo, WizardAction } from "@/lib/types";
 
@@ -102,6 +103,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [expandedBlock, setExpandedBlock] = useState<number | null>(null);
+  const toggleBlock = (index: number) => setExpandedBlock(prev => prev === index ? null : index);
 
   const communityConfigs = useMemo<CommunityConfig[]>(() => {
     try {
@@ -193,10 +196,166 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
       </h1>
       <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-6 sm:mb-8 leading-relaxed">
         BYOC (Bring Your Own Cloud) lets your customers run your software in their own
-        cloud account. Pick a Helm chart below and we'll generate the config files you
+        cloud account. Point us to your Helm chart and we'll generate the config files you
         need to get started with{" "}
         <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon</a>.
       </p>
+
+      {/* How it works */}
+      <div className="max-w-xl mx-auto mb-6 sm:mb-8">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            How it works
+          </div>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+
+        <div className="space-y-2">
+          {/* Block 1: Find your chart */}
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <button
+              onClick={() => toggleBlock(0)}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold flex items-center justify-center shrink-0">
+                1
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground">Find your chart</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Search GitHub or paste a link — we scan for Chart.yaml and values.yaml
+                </div>
+              </div>
+              <Search className="w-4 h-4 text-muted-foreground shrink-0 mr-1" />
+              <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0", expandedBlock === 0 && "rotate-180")} />
+            </button>
+            <div className={cn("grid transition-all duration-200 ease-out", expandedBlock === 0 ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+              <div className="overflow-hidden">
+                <div className="px-4 pb-4 pt-1 border-t border-border">
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    Paste a GitHub URL or search by name. We scan the repo for Helm charts,
+                    read Chart.yaml for dependencies, and parse values.yaml to detect passwords,
+                    ingress, and infrastructure subcharts.
+                  </p>
+                  <div className="flex items-center gap-2 text-xs overflow-x-auto pb-1">
+                    <div className="flex items-center gap-1.5 bg-muted/60 rounded-lg px-3 py-2 shrink-0">
+                      <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="font-mono text-foreground">your-org/your-app</span>
+                    </div>
+                    <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                        <FileText className="w-3 h-3 text-primary/60" />
+                        <span className="font-mono text-muted-foreground">Chart.yaml</span>
+                      </div>
+                      <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                        <FileText className="w-3 h-3 text-primary/60" />
+                        <span className="font-mono text-muted-foreground">values.yaml</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-2 shrink-0">
+                      <span className="text-primary font-medium">Dependencies detected</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Block 2: Configure for BYOC */}
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <button
+              onClick={() => toggleBlock(1)}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold flex items-center justify-center shrink-0">
+                2
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground">Configure for BYOC</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  We detect dependencies and wire up managed cloud infrastructure
+                </div>
+              </div>
+              <Cloud className="w-4 h-4 text-muted-foreground shrink-0 mr-1" />
+              <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0", expandedBlock === 1 && "rotate-180")} />
+            </button>
+            <div className={cn("grid transition-all duration-200 ease-out", expandedBlock === 1 ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+              <div className="overflow-hidden">
+                <div className="px-4 pb-4 pt-1 border-t border-border">
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    Bundled Helm subcharts get replaced with managed cloud services that Nuon
+                    provisions in each customer's account. You choose the cloud provider
+                    (AWS or Azure) and infrastructure mode.
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    {[
+                      { from: "postgresql", to: "Amazon RDS" },
+                      { from: "redis / valkey", to: "ElastiCache" },
+                      { from: "minio", to: "S3 Bucket" },
+                    ].map((row) => (
+                      <div key={row.from} className="flex items-center gap-2">
+                        <div className="bg-muted/60 rounded-lg px-3 py-1.5 font-mono text-muted-foreground w-28 shrink-0 truncate">
+                          {row.from}
+                        </div>
+                        <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                        <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-1.5 font-medium text-primary flex-1">
+                          {row.to}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Block 3: Download & deploy */}
+          <div className="bg-card rounded-xl border border-border overflow-hidden">
+            <button
+              onClick={() => toggleBlock(2)}
+              className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+            >
+              <div className="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold flex items-center justify-center shrink-0">
+                3
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground">Download & deploy</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Get a complete set of config files, ready to push to GitHub
+                </div>
+              </div>
+              <Download className="w-4 h-4 text-muted-foreground shrink-0 mr-1" />
+              <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0", expandedBlock === 2 && "rotate-180")} />
+            </button>
+            <div className={cn("grid transition-all duration-200 ease-out", expandedBlock === 2 ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+              <div className="overflow-hidden">
+                <div className="px-4 pb-4 pt-1 border-t border-border">
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    You get a ZIP with everything Nuon needs — push it to GitHub, connect to Nuon,
+                    and create your first customer install.
+                  </p>
+                  <div className="bg-muted/40 rounded-lg px-4 py-3 font-mono text-xs leading-relaxed">
+                    <div className="text-foreground font-medium mb-1">your-app/</div>
+                    <div className="text-muted-foreground pl-4 space-y-0.5">
+                      <div><span className="text-foreground">metadata.toml</span> <span className="text-muted-foreground/60 ml-2">— app identity</span></div>
+                      <div><span className="text-foreground">sandbox.toml</span> <span className="text-muted-foreground/60 ml-2">— environment config</span></div>
+                      <div><span className="text-foreground">inputs.toml</span> <span className="text-muted-foreground/60 ml-2">— customer settings</span></div>
+                      <div className="text-foreground font-medium mt-1">components/</div>
+                      <div className="pl-4 space-y-0.5">
+                        <div><span className="text-muted-foreground">1-rds.toml</span> <span className="text-muted-foreground/60 ml-2">— managed database</span></div>
+                        <div><span className="text-muted-foreground">2-your-app.toml</span> <span className="text-muted-foreground/60 ml-2">— Helm release</span></div>
+                        <div><span className="text-muted-foreground">values/values.yaml</span> <span className="text-muted-foreground/60 ml-2">— templated values</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Search bar */}
       <div ref={containerRef} className="relative max-w-xl mx-auto mb-6 sm:mb-10">
@@ -304,30 +463,6 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
             </button>
           );
         })}
-      </div>
-
-      {/* How it works */}
-      <div className="mt-8 sm:mt-10 max-w-xl mx-auto">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            How it works
-          </div>
-          <div className="flex-1 h-px bg-border" />
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm text-muted-foreground">
-          <div>
-            <span className="text-foreground font-medium">1. Pick a chart</span>
-            <p className="mt-1 leading-relaxed">Choose a public Helm chart that packages the app you want to offer.</p>
-          </div>
-          <div>
-            <span className="text-foreground font-medium">2. Configure</span>
-            <p className="mt-1 leading-relaxed">Select a cloud provider and any infrastructure your app needs (databases, caches, storage).</p>
-          </div>
-          <div>
-            <span className="text-foreground font-medium">3. Download config</span>
-            <p className="mt-1 leading-relaxed">Get a ready-to-use set of files that tell Nuon how to deploy your app into each customer's cloud.</p>
-          </div>
-        </div>
       </div>
 
       {/* Community configs */}
