@@ -1,8 +1,9 @@
-import { useMemo, useState, useEffect, useCallback } from "react";
-import { codeToHtml } from "shiki";
+import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import { generateNuonConfig, validateGeneratedConfig } from "@/lib/nuon";
 import type { ValidationWarning } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions } from "@/lib/types";
+import { useTheme } from "@/hooks/use-theme";
 import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff, AlertTriangle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import JSZip from "jszip";
@@ -14,10 +15,10 @@ const LANG_BADGE_COLORS: Record<string, string> = {
   json: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
 };
 
-const SHIKI_LANG_MAP: Record<string, string> = {
-  toml: "toml",
+const MONACO_LANG_MAP: Record<string, string> = {
+  toml: "ini",
   yaml: "yaml",
-  hcl: "hcl",
+  hcl: "plaintext",
   json: "json",
 };
 
@@ -176,6 +177,7 @@ function CodeSnippet({ text }: { text: string }) {
 }
 
 export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, onReset, onGenerated }: StepGenerateProps) {
+  const { theme } = useTheme();
   const files = useMemo(
     () => generateNuonConfig(repo.full_name, chart, valuesYaml, configOptions),
     [repo, chart, valuesYaml, configOptions]
@@ -192,23 +194,43 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
 
   const valuesFile = files.find((f) => f.filename.endsWith("values.yaml"));
   const [selectedFile, setSelectedFile] = useState<GeneratedFile>(valuesFile || files[0]);
-  const [highlighted, setHighlighted] = useState("");
   const [copied, setCopied] = useState(false);
   const [showCode, setShowCode] = useState(true);
   const appDirName = (configOptions.namespace || chart.name).toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
+  // Track user edits per file so changes persist across file switches and into ZIP download
+  const editsRef = useRef<Record<string, string>>({});
+  const editorRef = useRef<any>(null);
+  const decorationsRef = useRef<any[]>([]);
+
+  const getFileContent = useCallback((file: GeneratedFile) => {
+    return editsRef.current[file.filename] ?? file.content;
+  }, []);
+
+  // Highlight {{ .nuon.* }} template variables with decorations
+  const updateDecorations = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const matches = model.findMatches("\\{\\{\\s*\\.nuon\\.[^}]+\\}\\}", false, true, false, null, false);
+    const newDecorations = matches.map((match: any) => ({
+      range: match.range,
+      options: { inlineClassName: "nuon-template-var" },
+    }));
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, newDecorations);
+  }, []);
+
+  // Re-apply decorations when switching files
   useEffect(() => {
-    if (!showCode) return;
-    const lang = SHIKI_LANG_MAP[selectedFile.language] || "text";
-    codeToHtml(selectedFile.content, { lang, theme: "github-dark" }).then((html) => {
-      // Highlight Nuon template variables with a subtle indigo background
-      const withHighlights = html.replace(
-        /(\{\{[\s]*\.nuon\.[^}]+\}\})/g,
-        '<span style="background: rgba(99, 102, 241, 0.15); border-radius: 3px; padding: 0 2px;">$1</span>'
-      );
-      setHighlighted(withHighlights);
-    });
-  }, [selectedFile, showCode]);
+    const timer = setTimeout(updateDecorations, 50);
+    return () => clearTimeout(timer);
+  }, [selectedFile, updateDecorations]);
+
+  const handleEditorMount: OnMount = (editor) => {
+    editorRef.current = editor;
+    updateDecorations();
+  };
 
   useEffect(() => {
     onGenerated();
@@ -231,7 +253,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   const downloadZip = useCallback(async () => {
     const zip = new JSZip();
     for (const file of files) {
-      zip.file(`${appDirName}/${file.filename}`, file.content);
+      zip.file(`${appDirName}/${file.filename}`, editsRef.current[file.filename] ?? file.content);
     }
     const blob = await zip.generateAsync({ type: "blob" });
     const url = URL.createObjectURL(blob);
@@ -243,13 +265,13 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   }, [files, appDirName]);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(selectedFile.content);
+    navigator.clipboard.writeText(getFileContent(selectedFile));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownloadFile = () => {
-    const blob = new Blob([selectedFile.content], { type: "text/plain" });
+    const blob = new Blob([getFileContent(selectedFile)], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -332,9 +354,10 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
           ))}
         </div>
 
-        {/* Code viewer - center (togglable) */}
+        {/* Code editor - center (togglable) */}
         {showCode && (
           <div className="flex-1 flex flex-col min-w-0">
+            <style>{`.nuon-template-var { background: rgba(99, 102, 241, 0.15); border-radius: 3px; padding: 0 1px; }`}</style>
             <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
               <span className="text-sm font-mono text-muted-foreground truncate min-w-0 flex-1">
                 {selectedFile.filename}
@@ -356,10 +379,35 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 <Download className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="flex-1 overflow-auto bg-[#24292e] dark:bg-[#0d1117]">
-              <div
-                className="[&_pre]:!bg-transparent [&_pre]:px-5 [&_pre]:py-4 [&_pre]:m-0 [&_code]:text-[13px] [&_code]:!leading-snug [&_.line]:block [&_.line:empty]:h-[18px]"
-                dangerouslySetInnerHTML={{ __html: highlighted }}
+            <div className="flex-1 min-h-0">
+              <Editor
+                path={selectedFile.filename}
+                language={MONACO_LANG_MAP[selectedFile.language] || "plaintext"}
+                defaultValue={getFileContent(selectedFile)}
+                theme={theme === "dark" ? "vs-dark" : "vs"}
+                onMount={handleEditorMount}
+                onChange={(value) => {
+                  if (value !== undefined) {
+                    editsRef.current[selectedFile.filename] = value;
+                    updateDecorations();
+                  }
+                }}
+                options={{
+                  fontSize: 13,
+                  fontFamily: "'Hack', monospace",
+                  lineNumbers: "on",
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  padding: { top: 12 },
+                  wordWrap: "on",
+                  renderLineHighlight: "none",
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  scrollbar: {
+                    verticalScrollbarSize: 6,
+                    horizontalScrollbarSize: 6,
+                  },
+                }}
               />
             </div>
           </div>
