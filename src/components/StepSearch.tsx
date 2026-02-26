@@ -194,23 +194,127 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
       <h1 className="text-2xl sm:text-3xl lg:text-4xl font-medium tracking-tight text-foreground text-center mb-3 sm:mb-4">
         Generate a BYOC config from any Helm chart
       </h1>
-      <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-6 sm:mb-8 leading-relaxed">
-        BYOC (Bring Your Own Cloud) lets your customers run your software in their own
-        cloud account. Point us to your Helm chart and we'll generate the config files you
-        need to get started with{" "}
-        <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon</a>.
+      <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
+        Let your customers run your software in their own cloud account.
       </p>
 
-      {/* How it works */}
-      <div className="max-w-xl lg:max-w-3xl mx-auto mb-6 sm:mb-8">
-        <div className="flex items-center gap-2 mb-3">
+      {/* Search bar */}
+      <div ref={containerRef} className="relative max-w-xl mx-auto mb-8 sm:mb-12">
+        <div className="relative flex items-center bg-card rounded-xl border border-border hover:border-muted-foreground/30 transition-colors">
+          <Search className="w-4 h-4 text-muted-foreground ml-4 shrink-0" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => handleSearch(e.target.value)}
+            onFocus={() => results.length > 0 && setShowResults(true)}
+            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+            placeholder="Search for repositories (or paste a link)"
+            className="flex-1 bg-transparent px-3 py-3.5 text-base text-foreground placeholder:text-muted-foreground outline-none"
+          />
+          {loading && (
+            <div className="mr-3">
+              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <p className="mt-2 text-sm text-destructive px-1">{error}</p>
+        )}
+
+        {showResults && results.length > 0 && (
+          <div className="absolute top-full left-0 right-0 mt-1.5 bg-card border border-border rounded-xl shadow-lg overflow-hidden z-50">
+            {results.map((repo) => (
+              <button
+                key={repo.id}
+                onClick={() => selectRepo(repo, (repo as any)._subpath)}
+                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left group"
+              >
+                <img src={repo.owner.avatar_url} alt="" className="w-6 h-6 rounded-full shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-base font-medium text-foreground truncate">{repo.full_name}</div>
+                  {repo.description && (
+                    <div className="text-sm text-muted-foreground truncate mt-0.5">{repo.description}</div>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 text-sm text-muted-foreground shrink-0">
+                  <Star className="w-3 h-3" />
+                  {repo.stargazers_count.toLocaleString()}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Card grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">
+        {[
+          { type: "add" as const },
+          ...FEATURED_REPOS.map((r) => ({ type: "repo" as const, repo: r })),
+        ].map((item) => {
+          if (item.type === "add") {
+            return (
+              <button
+                key="add"
+                onClick={focusInput}
+                className="text-left px-5 py-5 bg-primary/5 hover:bg-primary/10 transition-all group h-[160px] flex flex-col justify-between"
+              >
+                <div>
+                  <Plus className="w-4 h-4 text-primary mb-1.5" />
+                  <div className="text-base font-medium text-foreground">Connect your repo</div>
+                  <div className="text-sm text-muted-foreground mt-1 leading-relaxed">
+                    Paste a GitHub repo URL or search above to find your chart
+                  </div>
+                </div>
+                <div className="flex items-center justify-end">
+                  <div className="w-6 h-6 rounded-full border border-primary/30 group-hover:border-primary group-hover:bg-primary/10 flex items-center justify-center transition-all">
+                    <ArrowRight className="w-3 h-3 text-primary/60 group-hover:text-primary transition-colors" />
+                  </div>
+                </div>
+              </button>
+            );
+          }
+
+          const repo = item.repo!;
+          return (
+            <button
+              key={repo.full_name}
+              onClick={() => handleSuggestion(repo)}
+              className="text-left px-5 py-5 bg-card hover:bg-muted/30 transition-all group h-[160px] flex flex-col justify-between"
+            >
+              <div>
+                <div className="text-base font-medium text-foreground group-hover:text-primary transition-colors">
+                  {repo.full_name}
+                </div>
+                <div className="text-sm text-muted-foreground mt-1.5 line-clamp-2 leading-relaxed">
+                  {repo.description}
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <Star className="w-3 h-3 fill-muted-foreground/50" />
+                  <span className="font-medium">{repo.stars_short}</span>
+                </span>
+                <div className="w-6 h-6 rounded-full border border-border group-hover:border-muted-foreground/50 group-hover:bg-muted flex items-center justify-center transition-all">
+                  <ArrowRight className="w-3 h-3 text-muted-foreground/50 group-hover:text-foreground transition-colors" />
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* How it works — below the grid */}
+      <div className="max-w-xl lg:max-w-3xl mx-auto mt-14 sm:mt-20">
+        <div className="flex items-center gap-2 mb-4">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
             How it works
           </div>
           <div className="flex-1 h-px bg-border" />
         </div>
 
-        {/* Card buttons — vertical on mobile, horizontal on lg */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
           {([
             { idx: 0, title: "Find your chart", subtitle: "Search GitHub or paste a link — we scan for Chart.yaml and values.yaml", Icon: Search },
@@ -318,7 +422,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
           ))}
         </div>
 
-        {/* Desktop expansion panel — spans below all 3 cards */}
+        {/* Desktop expansion panel */}
         <div className={cn("hidden lg:grid transition-all duration-200 ease-out mt-2", expandedBlock !== null ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
           <div className="overflow-hidden">
             <div className="bg-card rounded-xl border border-border px-5 pb-4 pt-3">
@@ -401,117 +505,9 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         </div>
       </div>
 
-      {/* Search bar */}
-      <div ref={containerRef} className="relative max-w-xl mx-auto mb-6 sm:mb-10">
-        <div className="relative flex items-center bg-card rounded-xl border border-border hover:border-muted-foreground/30 transition-colors">
-          <Search className="w-4 h-4 text-muted-foreground ml-4 shrink-0" />
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => handleSearch(e.target.value)}
-            onFocus={() => results.length > 0 && setShowResults(true)}
-            onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-            placeholder="Search for repositories (or paste a link)"
-            className="flex-1 bg-transparent px-3 py-3.5 text-base text-foreground placeholder:text-muted-foreground outline-none"
-          />
-          {loading && (
-            <div className="mr-3">
-              <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
-            </div>
-          )}
-        </div>
-
-        {error && (
-          <p className="mt-2 text-sm text-destructive px-1">{error}</p>
-        )}
-
-        {showResults && results.length > 0 && (
-          <div className="absolute top-full left-0 right-0 mt-1.5 bg-card border border-border rounded-xl shadow-lg overflow-hidden z-50">
-            {results.map((repo) => (
-              <button
-                key={repo.id}
-                onClick={() => selectRepo(repo, (repo as any)._subpath)}
-                className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/50 transition-colors text-left group"
-              >
-                <img src={repo.owner.avatar_url} alt="" className="w-6 h-6 rounded-full shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-base font-medium text-foreground truncate">{repo.full_name}</div>
-                  {repo.description && (
-                    <div className="text-sm text-muted-foreground truncate mt-0.5">{repo.description}</div>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 text-sm text-muted-foreground shrink-0">
-                  <Star className="w-3 h-3" />
-                  {repo.stargazers_count.toLocaleString()}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Card grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">
-        {[
-          { type: "add" as const },
-          ...FEATURED_REPOS.map((r) => ({ type: "repo" as const, repo: r })),
-        ].map((item) => {
-          if (item.type === "add") {
-            return (
-              <button
-                key="add"
-                onClick={focusInput}
-                className="text-left px-5 py-5 bg-primary/5 hover:bg-primary/10 transition-all group h-[160px] flex flex-col justify-between"
-              >
-                <div>
-                  <Plus className="w-4 h-4 text-primary mb-1.5" />
-                  <div className="text-base font-medium text-foreground">Connect your repo</div>
-                  <div className="text-sm text-muted-foreground mt-1 leading-relaxed">
-                    Paste a GitHub repo URL or search above to find your chart
-                  </div>
-                </div>
-                <div className="flex items-center justify-end">
-                  <div className="w-6 h-6 rounded-full border border-primary/30 group-hover:border-primary group-hover:bg-primary/10 flex items-center justify-center transition-all">
-                    <ArrowRight className="w-3 h-3 text-primary/60 group-hover:text-primary transition-colors" />
-                  </div>
-                </div>
-              </button>
-            );
-          }
-
-          const repo = item.repo!;
-          return (
-            <button
-              key={repo.full_name}
-              onClick={() => handleSuggestion(repo)}
-              className="text-left px-5 py-5 bg-card hover:bg-muted/30 transition-all group h-[160px] flex flex-col justify-between"
-            >
-              <div>
-                <div className="text-base font-medium text-foreground group-hover:text-primary transition-colors">
-                  {repo.full_name}
-                </div>
-                <div className="text-sm text-muted-foreground mt-1.5 line-clamp-2 leading-relaxed">
-                  {repo.description}
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  <Star className="w-3 h-3 fill-muted-foreground/50" />
-                  <span className="font-medium">{repo.stars_short}</span>
-                </span>
-                <div className="w-6 h-6 rounded-full border border-border group-hover:border-muted-foreground/50 group-hover:bg-muted flex items-center justify-center transition-all">
-                  <ArrowRight className="w-3 h-3 text-muted-foreground/50 group-hover:text-foreground transition-colors" />
-                </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
       {/* Community configs */}
       {communityConfigs.length > 0 && (
-        <div className="mt-10">
+        <div className="mt-14 sm:mt-20">
           <div className="flex items-center gap-2 mb-4">
             <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Recently generated
