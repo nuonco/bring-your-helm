@@ -737,7 +737,26 @@ TARGET_NAMESPACE = "${esc(namespace)}"`,
   };
 }
 
-export function generateValuesFile(
+/** Navigate a dot-separated path (e.g. "hub.ingress") into a nested object, creating missing keys. */
+function navigateToNestedObject(
+  obj: Record<string, unknown>,
+  dotPath: string,
+): Record<string, unknown> | null {
+  const parts = dotPath.split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return null;
+    const rec = current as Record<string, unknown>;
+    if (!(part in rec)) rec[part] = {};
+    current = rec[part];
+  }
+  return current && typeof current === "object" && !Array.isArray(current)
+    ? (current as Record<string, unknown>)
+    : null;
+}
+
+/** Minimal override generator — used as fallback when no original values.yaml is available. */
+function generateMinimalValuesFile(
   chartName: string,
   originalValues: string | null,
   infraDeps: string[],
@@ -864,6 +883,179 @@ export function generateValuesFile(
     filename: `components/values/${chartName}/values.yaml`,
     language: "yaml",
     content: sections.join("\n"),
+  };
+}
+
+/**
+ * Full-file values generator: starts with the complete original values.yaml,
+ * applies Nuon modifications in-place, and appends infrastructure wiring.
+ * Falls back to minimal generation if no original values are available.
+ */
+export function generateValuesFile(
+  chartName: string,
+  originalValues: string | null,
+  infraDeps: string[],
+): GeneratedFile {
+  const HOSTNAME = "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}";
+
+  // Parse original values
+  let parsed: Record<string, unknown> = {};
+  if (originalValues) {
+    try {
+      const loaded = yaml.load(originalValues);
+      if (loaded && typeof loaded === "object") parsed = loaded as Record<string, unknown>;
+    } catch { /* fall through */ }
+  }
+
+  // If no original values available, fall back to minimal generation
+  if (Object.keys(parsed).length === 0) {
+    return generateMinimalValuesFile(chartName, originalValues, infraDeps);
+  }
+
+  // Deep-clone the parsed object for in-place modification
+  const modified = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown>;
+
+  const infraKeyMap = findInfraKeys(parsed, infraDeps);
+  const disabledKeys = new Set<string>();
+
+  // 1. Disable bundled subcharts
+  for (const [, keys] of infraKeyMap) {
+    for (const k of keys) {
+      if (modified[k] && typeof modified[k] === "object") {
+        (modified[k] as Record<string, unknown>).enabled = false;
+      } else {
+        modified[k] = { enabled: false };
+      }
+      disabledKeys.add(k);
+    }
+  }
+
+  // 2. Modify ingress in-place
+  const ingressInfo = detectIngressStructure(parsed);
+  if (ingressInfo) {
+    const ingress = navigateToNestedObject(modified, ingressInfo.key);
+    if (ingress) {
+      ingress.enabled = true;
+      if (ingressInfo.type === "flat") {
+        ingress.hostname = HOSTNAME;
+      } else {
+        // hosts-array: modify first entry or create new
+        if (Array.isArray(ingress.hosts) && ingress.hosts.length > 0) {
+          const first = ingress.hosts[0];
+          if (typeof first === "string") {
+            ingress.hosts[0] = HOSTNAME;
+          } else if (first && typeof first === "object") {
+            (first as Record<string, unknown>).host = HOSTNAME;
+          }
+        } else {
+          ingress.hosts = [
+            { host: HOSTNAME, paths: [{ path: "/", pathType: "ImplementationSpecific" }] },
+          ];
+        }
+      }
+      // Add external-dns annotation
+      if (!ingress.annotations || typeof ingress.annotations !== "object") {
+        ingress.annotations = {};
+      }
+      (ingress.annotations as Record<string, unknown>)["external-dns.alpha.kubernetes.io/hostname"] = HOSTNAME;
+    }
+  } else {
+    // No ingress found in original — add at top level
+    modified.ingress = {
+      enabled: true,
+      hostname: HOSTNAME,
+      annotations: { "external-dns.alpha.kubernetes.io/hostname": HOSTNAME },
+    };
+  }
+
+  // 3. Replace password fields (skip those under disabled subcharts)
+  const passwords = findPasswordPaths(parsed).filter((p) => !disabledKeys.has(p.path[0]));
+  for (const pw of passwords) {
+    let target: Record<string, unknown> = modified;
+    let found = true;
+    for (let i = 0; i < pw.path.length - 1; i++) {
+      const next = target[pw.path[i]];
+      if (!next || typeof next !== "object" || Array.isArray(next)) { found = false; break; }
+      target = next as Record<string, unknown>;
+    }
+    if (found) {
+      target[pw.path[pw.path.length - 1]] = "{{ .nuon.inputs.inputs.admin_password }}";
+    }
+  }
+
+  // 4. Remove externalDatabase/externalRedis from clone to avoid duplication
+  //    (they'll be appended as commented sections below)
+  const hasPg = infraDeps.includes("postgresql");
+  const hasMysql = infraDeps.some((d) => ["mysql", "mariadb"].includes(d));
+  const hasRedis = infraDeps.includes("redis");
+  const hasDb = hasPg || hasMysql;
+
+  if (hasDb) delete modified.externalDatabase;
+  if (hasRedis) delete modified.externalRedis;
+
+  // 5. Serialize with yaml.dump()
+  const dumpOpts = { lineWidth: -1, noRefs: true, quotingType: '"' as const, forceQuotes: false };
+  const yamlContent = yaml.dump(modified, dumpOpts);
+
+  // 6. Build final content
+  const lines: string[] = [
+    `# Nuon values override for ${chartName}`,
+    `# Full chart values with Nuon template variables applied in-place.`,
+    `# Docs: https://docs.nuon.co/configuration-files`,
+    ``,
+    yamlContent.trimEnd(),
+  ];
+
+  // 7. Append external service blocks
+  if (hasDb || hasRedis) {
+    lines.push("");
+    lines.push("# --- Infrastructure wiring added by byocify ---");
+    lines.push("# These connect your app to Nuon-managed cloud services.");
+    lines.push("# Adjust field names to match your chart's external service configuration.");
+  }
+
+  if (hasPg) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalDatabase: {
+        host: "{{ .nuon.components.rds.outputs.address }}",
+        port: "{{ .nuon.components.rds.outputs.db_instance_port }}",
+        database: "{{ .nuon.inputs.inputs.db_name }}",
+        existingSecret: `${chartName}-db-credentials`,
+        existingSecretPasswordKey: "password",
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  if (hasMysql && !hasPg) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalDatabase: {
+        host: "{{ .nuon.components.rds.outputs.address }}",
+        port: 3306,
+        database: "{{ .nuon.inputs.inputs.db_name }}",
+        existingSecret: `${chartName}-db-credentials`,
+        existingSecretPasswordKey: "password",
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  if (hasRedis) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalRedis: {
+        host: "{{ .nuon.components.elasticache.outputs.endpoint }}",
+        port: 6379,
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  lines.push("");
+
+  return {
+    filename: `components/values/${chartName}/values.yaml`,
+    language: "yaml",
+    content: lines.join("\n"),
   };
 }
 

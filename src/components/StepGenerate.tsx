@@ -216,7 +216,13 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
     const matches = model.findMatches("\\{\\{\\s*\\.nuon\\.[^}]+\\}\\}", false, true, false, null, false);
     const newDecorations = matches.map((match: any) => ({
       range: match.range,
-      options: { inlineClassName: "nuon-template-var" },
+      options: {
+        inlineClassName: "nuon-template-var",
+        overviewRuler: {
+          color: "rgba(99, 102, 241, 0.6)",
+          position: 1, // OverviewRulerLane.Center
+        },
+      },
     }));
     decorationsRef.current = editor.deltaDecorations(decorationsRef.current, newDecorations);
   }, []);
@@ -401,7 +407,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                   padding: { top: 12 },
                   wordWrap: "on",
                   renderLineHighlight: "none",
-                  overviewRulerLanes: 0,
+                  overviewRulerLanes: 1,
                   hideCursorInOverviewRuler: true,
                   scrollbar: {
                     verticalScrollbarSize: 6,
