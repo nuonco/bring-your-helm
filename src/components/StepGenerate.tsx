@@ -1,10 +1,10 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import { generateNuonConfig, validateGeneratedConfig } from "@/lib/nuon";
+import { generateNuonConfig, validateGeneratedConfig, NUON_VARIABLES } from "@/lib/nuon";
 import type { ValidationWarning } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions } from "@/lib/types";
 import { useTheme } from "@/hooks/use-theme";
-import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff, AlertTriangle, XCircle } from "lucide-react";
+import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, ChevronDown, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff, AlertTriangle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import JSZip from "jszip";
 
@@ -196,12 +196,14 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   const [selectedFile, setSelectedFile] = useState<GeneratedFile>(valuesFile || files[0]);
   const [copied, setCopied] = useState(false);
   const [showCode, setShowCode] = useState(true);
+  const [showGettingStarted, setShowGettingStarted] = useState(false);
   const appDirName = (configOptions.namespace || chart.name).toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
   // Track user edits per file so changes persist across file switches and into ZIP download
   const editsRef = useRef<Record<string, string>>({});
   const editorRef = useRef<any>(null);
   const decorationsRef = useRef<any[]>([]);
+  const hasScrolledToFirstMatchRef = useRef(false);
 
   const getFileContent = useCallback((file: GeneratedFile) => {
     return editsRef.current[file.filename] ?? file.content;
@@ -236,6 +238,20 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
   const handleEditorMount: OnMount = (editor) => {
     editorRef.current = editor;
     updateDecorations();
+
+    // Auto-scroll to first template variable on initial load
+    if (!hasScrolledToFirstMatchRef.current) {
+      const model = editor.getModel();
+      if (model) {
+        const matches = model.findMatches(
+          "\\{\\{\\s*\\.nuon\\.[^}]+\\}\\}", false, true, false, null, false
+        );
+        if (matches.length > 0) {
+          editor.revealLineInCenter(matches[0].range.startLineNumber);
+          hasScrolledToFirstMatchRef.current = true;
+        }
+      }
+    }
   };
 
   useEffect(() => {
@@ -342,6 +358,8 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
         </div>
       </div>
 
+      <style>{`.nuon-template-var { background: rgba(99, 102, 241, 0.15); border-radius: 3px; padding: 0 1px; }`}</style>
+
       {/* Panel layout */}
       <div className="flex flex-1 min-h-0">
         {/* File tree - left */}
@@ -363,7 +381,6 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
         {/* Code editor - center (togglable) */}
         {showCode && (
           <div className="flex-1 flex flex-col min-w-0">
-            <style>{`.nuon-template-var { background: rgba(99, 102, 241, 0.15); border-radius: 3px; padding: 0 1px; }`}</style>
             <div className="flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/20 shrink-0">
               <span className="text-sm font-mono text-muted-foreground truncate min-w-0 flex-1">
                 {selectedFile.filename}
@@ -419,29 +436,80 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
           </div>
         )}
 
-        {/* Next steps guide - right (expands when code hidden) */}
+        {/* Right panel — variable legend + collapsible getting started */}
         <div className={cn(
           "shrink-0 border-l border-border bg-card flex flex-col",
-          showCode ? "w-80 lg:w-96" : "flex-1"
+          showCode ? "w-72 lg:w-80" : "flex-1"
         )}>
           <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Next Steps
+              Template Variables
             </span>
           </div>
           <div className="flex-1 overflow-y-auto">
             <div className={cn(
-              "py-6",
+              "py-5",
               showCode ? "px-4" : "px-6 max-w-xl mx-auto"
             )}>
-              <p className="text-sm text-muted-foreground leading-relaxed mb-5">
-                These files define your app for{" "}
-                <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon</a>,
-                a platform that deploys your software into each customer's own cloud account.
-                Push them to a GitHub repo, connect it to Nuon, and you're ready to create your first customer install.
+              {/* Legend explanation */}
+              <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                Values highlighted in{" "}
+                <span className="nuon-template-var font-mono text-xs">indigo</span>{" "}
+                are <strong className="text-foreground">Nuon template variables</strong>. At deploy time, Nuon replaces them with real values from each customer's install.
               </p>
+
+              {/* Example card */}
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 mb-4">
+                <div className="text-[10px] text-muted-foreground mb-1.5 font-medium uppercase tracking-wider">Example</div>
+                <code className="text-xs font-mono block leading-relaxed">
+                  <span className="text-muted-foreground">hostname: </span>
+                  <span className="nuon-template-var">{"{{ .nuon.inputs.inputs.subdomain }}"}</span>
+                </code>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  Replaced with the customer's subdomain input at deploy time.
+                </p>
+              </div>
+
+              {/* Common variables */}
+              <div className="space-y-3 mb-4">
+                <h4 className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Common variables
+                </h4>
+                {["Inputs", "Install", "Components"].map((category) => {
+                  const vars = NUON_VARIABLES.filter((v) => v.category === category).slice(0, 3);
+                  if (vars.length === 0) return null;
+                  return (
+                    <div key={category}>
+                      <div className="text-xs font-medium text-foreground mb-1">{category}</div>
+                      <ul className="space-y-1">
+                        {vars.map((v) => (
+                          <li key={v.template} className="text-xs leading-relaxed">
+                            <code className="font-mono text-primary/80 break-all">{v.template}</code>
+                            <span className="text-muted-foreground ml-1">— {v.description}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Docs link */}
+              <div className="pb-4 border-b border-border">
+                <a
+                  href="https://docs.nuon.co/configuration-files"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-primary hover:underline"
+                >
+                  <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                  Full variable reference
+                </a>
+              </div>
+
+              {/* Validation warnings */}
               {errors.length > 0 && (
-                <div className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
+                <div className="mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3">
                   <div className="flex items-center gap-2 mb-1.5">
                     <XCircle className="w-4 h-4 text-destructive shrink-0" />
                     <span className="text-sm font-medium text-destructive">Action needed</span>
@@ -454,7 +522,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                 </div>
               )}
               {warnings.length > 0 && (
-                <div className="mb-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
+                <div className="mt-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5 px-4 py-3">
                   <div className="flex items-center gap-2 mb-1.5">
                     <AlertTriangle className="w-4 h-4 text-yellow-600 dark:text-yellow-400 shrink-0" />
                     <span className="text-sm font-medium text-yellow-600 dark:text-yellow-400">Heads up</span>
@@ -468,75 +536,83 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, o
                   </ul>
                 </div>
               )}
-              <ol className="list-none">
-                <NextStep number={1} icon={Archive} title="Download and extract">
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Hit <strong className="text-foreground">Download ZIP</strong> above, then extract into a new repo:
-                  </p>
-                  <CodeSnippet text={`unzip ~\/Downloads\/${appDirName}-nuon-config.zip\ncd ${appDirName}`} />
-                </NextStep>
 
-                <NextStep number={2} icon={Pencil} title="Review and customize">
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    The generated files are a starting point. You'll want to customize them for your app:
-                  </p>
-                  <ul className="text-sm text-muted-foreground leading-relaxed space-y-2">
-                    <li className="flex gap-2">
-                      <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
-                      <span>Open <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">inputs.toml</code> — add, remove, or rename customer-facing inputs</span>
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
-                      <span>Check the values file for <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">TODO</code> comments and fill in placeholders</span>
-                    </li>
-                    <li className="flex gap-2">
-                      <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
-                      <span>Wire static values to inputs with <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">{"{{.nuon.install.inputs.<name>}}"}</code></span>
-                    </li>
-                  </ul>
-                </NextStep>
-
-                <NextStep number={3} icon={FolderTree} title="Push to GitHub">
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Nuon reads your config from a GitHub repo. Push these files so Nuon can sync them:
-                  </p>
-                  <CodeSnippet text={`git init && git add .\ngit commit -m "initial nuon config for ${chart.name}"\ngit remote add origin git@github.com:your-org/${appDirName}.git\ngit push -u origin main`} />
-                </NextStep>
-
-                <NextStep number={4} icon={Rocket} title="Connect to Nuon">
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Install the <a href="https://docs.nuon.co/cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a>, then create your app and point it at your config repo:
-                  </p>
-                  <CodeSnippet text={`nuon apps create -n ${appDirName}\nnuon apps sync`} />
-                </NextStep>
-
-                <NextStep number={5} icon={ShieldCheck} title="Validate and deploy" isLast>
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                    Validate checks that your config is correct. Then create your first install — this provisions real infrastructure in a customer's cloud:
-                  </p>
-                  <CodeSnippet text={`nuon apps validate\nnuon installs create -a ${appDirName} -n my-first-install`} />
-                </NextStep>
-              </ol>
-
-              <div className="mt-6 pt-5 border-t border-border flex flex-wrap gap-4">
-                <a
-                  href="https://docs.nuon.co/configuration-files"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
+              {/* Getting Started — collapsible */}
+              <div className="mt-4 rounded-lg border border-border overflow-hidden">
+                <button
+                  onClick={() => setShowGettingStarted(!showGettingStarted)}
+                  className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/40 transition-colors cursor-pointer"
                 >
-                  <BookOpen className="w-3.5 h-3.5 shrink-0" />
-                  Configuration file reference
-                </a>
-                <a
-                  href="https://docs.nuon.co/quickstart"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-primary hover:underline"
-                >
-                  <Rocket className="w-3.5 h-3.5 shrink-0" />
-                  Quickstart guide
-                </a>
+                  <Rocket className="w-4 h-4 text-primary shrink-0" />
+                  <span className="text-sm font-medium text-foreground flex-1">Getting Started</span>
+                  <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", showGettingStarted && "rotate-180")} />
+                </button>
+                <div className={cn(
+                  "grid transition-all duration-200 ease-out",
+                  showGettingStarted ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+                )}>
+                  <div className="overflow-hidden">
+                    <div className="px-3 pb-4 pt-1 border-t border-border">
+                      <ol className="list-none">
+                        <NextStep number={1} icon={Archive} title="Download and extract">
+                          <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                            Hit <strong className="text-foreground">Download ZIP</strong> above, then extract into a new repo:
+                          </p>
+                          <CodeSnippet text={`unzip ~\/Downloads\/${appDirName}-nuon-config.zip\ncd ${appDirName}`} />
+                        </NextStep>
+
+                        <NextStep number={2} icon={Pencil} title="Review and customize">
+                          <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                            The generated files are a starting point. Customize for your app:
+                          </p>
+                          <ul className="text-sm text-muted-foreground leading-relaxed space-y-2">
+                            <li className="flex gap-2">
+                              <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
+                              <span>Open <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">inputs.toml</code> — add, remove, or rename customer-facing inputs</span>
+                            </li>
+                            <li className="flex gap-2">
+                              <span className="text-primary/60 shrink-0 mt-0.5">&#x2022;</span>
+                              <span>Check the values file for <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">TODO</code> comments and fill in placeholders</span>
+                            </li>
+                          </ul>
+                        </NextStep>
+
+                        <NextStep number={3} icon={FolderTree} title="Push to GitHub">
+                          <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                            Nuon reads your config from a GitHub repo:
+                          </p>
+                          <CodeSnippet text={`git init && git add .\ngit commit -m "initial nuon config for ${chart.name}"\ngit remote add origin git@github.com:your-org/${appDirName}.git\ngit push -u origin main`} />
+                        </NextStep>
+
+                        <NextStep number={4} icon={Rocket} title="Connect to Nuon">
+                          <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                            Install the <a href="https://docs.nuon.co/cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a>, then create your app:
+                          </p>
+                          <CodeSnippet text={`nuon apps create -n ${appDirName}\nnuon apps sync`} />
+                        </NextStep>
+
+                        <NextStep number={5} icon={ShieldCheck} title="Validate and deploy" isLast>
+                          <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
+                            Validate your config, then create your first install:
+                          </p>
+                          <CodeSnippet text={`nuon apps validate\nnuon installs create -a ${appDirName} -n my-first-install`} />
+                        </NextStep>
+                      </ol>
+
+                      <div className="mt-4 pt-3 border-t border-border">
+                        <a
+                          href="https://docs.nuon.co/quickstart"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 text-sm text-primary hover:underline"
+                        >
+                          <Rocket className="w-3.5 h-3.5 shrink-0" />
+                          Quickstart guide
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
