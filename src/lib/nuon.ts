@@ -68,6 +68,91 @@ function esc(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+/**
+ * Resolve a dot-separated path against a nested object.
+ * Returns undefined if any segment is missing or hits a non-object.
+ */
+function resolveValuePath(
+  obj: Record<string, unknown>,
+  dotPath: string,
+): unknown {
+  const parts = dotPath.split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current == null || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+/**
+ * Replace non-Nuon Go template expressions in a YAML string.
+ *
+ * - {{ .Values.some.path }}  → resolved from valuesObj, or stripped
+ * - {{ .Values.x | default "y" }} → resolved, with "y" as fallback
+ * - {{ .Chart.* }}, {{ .Release.* }} → stripped
+ * - {{ include/template ... }} → stripped
+ * - {{ if/else/end/range/with }} → stripped
+ * - {{ .nuon.* }} → left intact
+ */
+export function sanitizeGoTemplates(
+  yamlContent: string,
+  valuesObj: Record<string, unknown>,
+): string {
+  const GO_TEMPLATE_RE = /\{\{-?\s*(.*?)\s*-?\}\}/g;
+
+  return yamlContent.replace(GO_TEMPLATE_RE, (fullMatch, innerExpr: string) => {
+    const expr = innerExpr.trim();
+
+    // Preserve all .nuon.* expressions (including "index .nuon.*")
+    if (expr.startsWith(".nuon.") || expr.startsWith("index .nuon.")) {
+      return fullMatch;
+    }
+
+    // Handle .Values.* expressions — resolve from valuesObj
+    const valuesMatch = expr.match(/^\.Values\.(\S+?)(?:\s*\|.*)?$/);
+    if (valuesMatch) {
+      const path = valuesMatch[1];
+      const resolved = resolveValuePath(valuesObj, path);
+
+      if (resolved !== undefined && resolved !== null && typeof resolved !== "object") {
+        return String(resolved);
+      }
+
+      // Try | default "..." fallback
+      const defaultMatch = expr.match(/\|\s*default\s+"([^"]*)"/);
+      if (defaultMatch) {
+        return defaultMatch[1];
+      }
+      const defaultMatchSingle = expr.match(/\|\s*default\s+'([^']*)'/);
+      if (defaultMatchSingle) {
+        return defaultMatchSingle[1];
+      }
+
+      // Unresolvable — empty string
+      return "";
+    }
+
+    // Handle `index .Values.* "key"` expressions
+    const indexValuesMatch = expr.match(/^index\s+\.Values\.(\S+)\s+"([^"]+)"/);
+    if (indexValuesMatch) {
+      const parent = resolveValuePath(valuesObj, indexValuesMatch[1]);
+      if (parent && typeof parent === "object" && !Array.isArray(parent)) {
+        const val = (parent as Record<string, unknown>)[indexValuesMatch[2]];
+        if (val !== undefined && val !== null && typeof val !== "object") {
+          return String(val);
+        }
+      }
+      return "";
+    }
+
+    // All other non-Nuon expressions: strip
+    return "";
+  });
+}
+
 // ---------------------------------------------------------------------------
 // YAML analysis helpers for minimal override generation
 // ---------------------------------------------------------------------------
@@ -1032,7 +1117,10 @@ export function generateValuesFile(
 
   // 5. Serialize with yaml.dump()
   const dumpOpts = { lineWidth: -1, noRefs: true, quotingType: '"' as const, forceQuotes: false };
-  const yamlContent = yaml.dump(modified, dumpOpts);
+  let yamlContent = yaml.dump(modified, dumpOpts);
+
+  // 5a. Sanitize non-Nuon Go template expressions that survived from the original chart
+  yamlContent = sanitizeGoTemplates(yamlContent, parsed);
 
   // 6. Build final content
   const lines: string[] = [
