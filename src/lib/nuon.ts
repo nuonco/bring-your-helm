@@ -1335,5 +1335,14 @@ export function validateGeneratedConfig(
     });
   }
 
+  const valuesFile = files.find((f) => f.filename.endsWith("values.yaml"));
+  if (valuesFile && !valuesFile.content.includes("Full chart values")) {
+    warnings.push({
+      severity: "warning",
+      message: "Values file was generated from scratch — the original values.yaml could not be loaded. This may be caused by GitHub API rate limiting. Try again in a few minutes.",
+      file: valuesFile.filename,
+    });
+  }
+
   return warnings;
 }
