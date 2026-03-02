@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
-import { getFileContent } from "@/lib/github";
+import { getFileContent, fetchChartFiles } from "@/lib/github";
 import { detectInfraDeps } from "@/lib/nuon";
-import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions } from "@/lib/types";
+import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions, ChartFile } from "@/lib/types";
 import {
   ArrowLeft,
   ArrowRight,
@@ -30,6 +30,7 @@ interface StepValuesEditorProps {
   chart: HelmChart;
   valuesYaml: string;
   configOptions: ConfigOptions;
+  chartFiles: ChartFile[];
   dispatch: React.Dispatch<WizardAction>;
   onNext: () => void;
   onBack: () => void;
@@ -40,11 +41,18 @@ export function StepValuesEditor({
   chart,
   valuesYaml,
   configOptions,
+  chartFiles,
   dispatch,
   onNext,
   onBack,
 }: StepValuesEditorProps) {
   const [loading, setLoading] = useState(!valuesYaml);
+  const [chartFilesLoading, setChartFilesLoading] = useState(false);
+
+  const isMonorepo = useMemo(() => {
+    const p = chart.path || ".";
+    return p !== "." && p.includes("/");
+  }, [chart.path]);
 
   const autoDetectedDeps = useMemo(
     () => detectInfraDeps(chart.dependencies || []),
@@ -56,6 +64,27 @@ export function StepValuesEditor({
       dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraDeps: autoDetectedDeps } });
     }
   }, [autoDetectedDeps, configOptions.infraDeps.length, dispatch]);
+
+  useEffect(() => {
+    if (isMonorepo && !configOptions.bundleChart) {
+      handleEnableBundle();
+    }
+  }, []);
+
+  const handleEnableBundle = async () => {
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { bundleChart: true } });
+    if (chartFiles.length > 0) return;
+    setChartFilesLoading(true);
+    try {
+      const [owner, name] = repo.full_name.split("/");
+      const files = await fetchChartFiles(owner, name, chart.path);
+      dispatch({ type: "SET_CHART_FILES", files });
+    } catch (err) {
+      console.error("Failed to fetch chart files:", err);
+    } finally {
+      setChartFilesLoading(false);
+    }
+  };
 
   const toggleInfraDep = (depId: string) => {
     const current = configOptions.infraDeps;
@@ -289,6 +318,80 @@ export function StepValuesEditor({
                 className="w-full h-9 px-3 text-sm font-mono bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
               />
             </div>
+          </div>
+
+          {/* Row 3: Chart Source */}
+          <div className="bg-card rounded-xl border border-border p-5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <h3 className="text-sm font-semibold text-foreground">Chart Source</h3>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px] text-xs leading-relaxed">
+                  Controls where the Nuon runner fetches the Helm chart from at deploy time. For monorepos with many charts, bundling avoids slow clones.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <p className="text-xs text-muted-foreground mb-3">
+              {isMonorepo
+                ? "This chart lives in a large repository. Bundling avoids slow build clones."
+                : "Where the Nuon runner fetches the Helm chart at deploy time."}
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className={cn(
+                "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                !configOptions.bundleChart ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+              )}>
+                <input
+                  type="radio"
+                  name="chartSource"
+                  checked={!configOptions.bundleChart}
+                  onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { bundleChart: false } })}
+                  className="accent-primary mt-0.5"
+                />
+                <div>
+                  <span className="text-sm font-medium text-foreground">Upstream repo</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Runner clones <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+                  </p>
+                </div>
+              </label>
+              <label className={cn(
+                "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                configOptions.bundleChart ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+              )}>
+                <input
+                  type="radio"
+                  name="chartSource"
+                  checked={configOptions.bundleChart}
+                  onChange={() => handleEnableBundle()}
+                  className="accent-primary mt-0.5"
+                />
+                <div>
+                  <span className="text-sm font-medium text-foreground">
+                    Bundle into config repo
+                    {isMonorepo && (
+                      <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-2">recommended</span>
+                    )}
+                  </span>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Chart files included in the ZIP — runner clones your config repo
+                  </p>
+                </div>
+              </label>
+            </div>
+            {chartFilesLoading && (
+              <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Fetching chart files...
+              </div>
+            )}
+            {configOptions.bundleChart && chartFiles.length > 0 && !chartFilesLoading && (
+              <p className="text-xs text-primary mt-3">
+                {chartFiles.length} chart file(s) will be bundled
+              </p>
+            )}
           </div>
 
           {/* Generate CTA */}

@@ -1,4 +1,4 @@
-import type { GitHubRepo, HelmChart, ChartDependency } from "./types";
+import type { GitHubRepo, HelmChart, ChartDependency, ChartFile } from "./types";
 import yaml from "js-yaml";
 
 const GITHUB_API = "https://api.github.com";
@@ -131,4 +131,70 @@ export async function findHelmCharts(owner: string, repo: string, subpath?: stri
 export async function getFileContent(owner: string, repo: string, path: string): Promise<string> {
   const data = await ghFetchJson<{ content: string }>(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`);
   return atob(data.content);
+}
+
+const CHART_FILE_EXTENSIONS = new Set([
+  ".yaml", ".yml", ".json", ".toml", ".tpl", ".txt", ".md", ".helmignore", ".lock",
+]);
+
+function hasAllowedExtension(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".helmignore") || lower.endsWith("chart.lock")) return true;
+  const dotIdx = lower.lastIndexOf(".");
+  if (dotIdx === -1) return false;
+  return CHART_FILE_EXTENSIONS.has(lower.slice(dotIdx));
+}
+
+async function listFilesRecursive(owner: string, repo: string, path: string): Promise<string[]> {
+  const data = await ghFetchJson<any>(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`);
+  if (!Array.isArray(data)) return [data.path];
+  const files: string[] = [];
+  const subdirs: string[] = [];
+  for (const item of data) {
+    if (item.type === "file") {
+      files.push(item.path);
+    } else if (item.type === "dir") {
+      subdirs.push(item.path);
+    }
+  }
+  const subResults = await Promise.all(
+    subdirs.map((dir) => listFilesRecursive(owner, repo, dir))
+  );
+  for (const sub of subResults) {
+    files.push(...sub);
+  }
+  return files;
+}
+
+export async function fetchChartFiles(
+  owner: string,
+  repo: string,
+  chartPath: string,
+): Promise<ChartFile[]> {
+  const allPaths = await listFilesRecursive(owner, repo, chartPath);
+  const prefix = chartPath.endsWith("/") ? chartPath : chartPath + "/";
+  const filteredPaths = allPaths.filter((p) => {
+    const rel = p.startsWith(prefix) ? p.slice(prefix.length) : p;
+    if (rel === "values.yaml") return false;
+    return hasAllowedExtension(p);
+  });
+
+  const results: ChartFile[] = [];
+  const CONCURRENCY = 5;
+  for (let i = 0; i < filteredPaths.length; i += CONCURRENCY) {
+    const batch = filteredPaths.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map(async (filePath) => {
+        const content = await getFileContent(owner, repo, filePath);
+        const relativePath = filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
+        return { relativePath, content };
+      })
+    );
+    for (const result of settled) {
+      if (result.status === "fulfilled") {
+        results.push(result.value);
+      }
+    }
+  }
+  return results;
 }

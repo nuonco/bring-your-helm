@@ -2,7 +2,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { generateNuonConfig, validateGeneratedConfig, NUON_VARIABLES } from "@/lib/nuon";
 import type { ValidationWarning } from "@/lib/nuon";
-import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions } from "@/lib/types";
+import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions, ChartFile } from "@/lib/types";
 import { useTheme } from "@/hooks/use-theme";
 import { ArrowLeft, Copy, Check, Download, ExternalLink, FileText, Archive, Folder, FolderOpen, ChevronRight, ChevronDown, Terminal, FolderTree, Pencil, Rocket, ShieldCheck, BookOpen, Code2, Eye, EyeOff, AlertTriangle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,7 @@ interface StepGenerateProps {
   chart: HelmChart;
   valuesYaml: string;
   configOptions: ConfigOptions;
+  chartFiles: ChartFile[];
   onBack: () => void;
   onReset: () => void;
   onGenerated: () => void;
@@ -176,11 +177,11 @@ function CodeSnippet({ text }: { text: string }) {
   );
 }
 
-export function StepGenerate({ repo, chart, valuesYaml, configOptions, onBack, onReset, onGenerated }: StepGenerateProps) {
+export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFiles, onBack, onReset, onGenerated }: StepGenerateProps) {
   const { theme } = useTheme();
   const files = useMemo(
-    () => generateNuonConfig(repo.full_name, chart, valuesYaml, configOptions),
-    [repo, chart, valuesYaml, configOptions]
+    () => generateNuonConfig(repo.full_name, chart, valuesYaml, configOptions, chartFiles),
+    [repo, chart, valuesYaml, configOptions, chartFiles]
   );
 
   const validationWarnings = useMemo(

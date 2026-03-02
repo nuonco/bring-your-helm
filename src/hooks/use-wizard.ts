@@ -15,6 +15,7 @@ const defaultConfigOptions: ConfigOptions = {
   namespace: "",
   configRepo: "",
   infraDeps: [],
+  bundleChart: false,
 };
 
 const initialState: WizardState = {
@@ -25,6 +26,7 @@ const initialState: WizardState = {
   valuesYaml: "",
   editedValuesYaml: "",
   configOptions: defaultConfigOptions,
+  chartFiles: [],
 };
 
 function reducer(state: WizardState, action: WizardAction): WizardState {
@@ -43,6 +45,8 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, editedValuesYaml: action.yaml };
     case "SET_CONFIG_OPTIONS":
       return { ...state, configOptions: { ...state.configOptions, ...action.options } };
+    case "SET_CHART_FILES":
+      return { ...state, chartFiles: action.files };
     case "RESET":
       return initialState;
     default:
