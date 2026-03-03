@@ -289,9 +289,9 @@ display_name = "${esc(chartName)}"`,
   };
 }
 
-function generateSandbox(cloudProvider: string): GeneratedFile {
+function generateSandbox(cloudProvider: string): GeneratedFile[] {
   if (cloudProvider === "azure") {
-    return {
+    return [{
       filename: "sandbox.toml",
       language: "toml",
       content: `# sandbox
@@ -302,20 +302,32 @@ terraform_version = "1.11.3"
 repo = "nuonco/azure-aks-sandbox"
 branch = "main"
 directory = "."`,
-    };
+    }];
   }
-  return {
-    filename: "sandbox.toml",
-    language: "toml",
-    content: `# sandbox
+  return [
+    {
+      filename: "sandbox.toml",
+      language: "toml",
+      content: `# sandbox
 name = "eks"
 terraform_version = "1.11.3"
 
 [public_repo]
 repo = "nuonco/aws-eks-sandbox"
 branch = "main"
-directory = "."`,
-  };
+directory = "."
+
+# Override maintenance ClusterRole to allow reading secrets
+# (required by Helm charts that use common.secrets.lookup)
+[[var_file]]
+contents = "./sandbox.tfvars"`,
+    },
+    {
+      filename: "sandbox.tfvars",
+      language: "hcl",
+      content: MAINTENANCE_RBAC_TFVARS,
+    },
+  ];
 }
 
 function generateRunner(cloudProvider: string): GeneratedFile {
@@ -368,6 +380,264 @@ const BOUNDARY_JSON = `{
     }
   ]
 }`;
+
+// Full maintenance ClusterRole RBAC rules override for aws-eks-sandbox.
+// Identical to the upstream defaults in nuonco/aws-eks-sandbox/values/k8s/maintenance_role.yaml
+// EXCEPT: "secrets" is added to the core-API get/list/watch rule so that Helm charts
+// using common.secrets.lookup (e.g. Bitnami nginx) can read existing secrets during
+// sync-and-plan without hitting a 403 Forbidden.
+const MAINTENANCE_RBAC_TFVARS = `maintenance_cluster_role_rules_override = [
+  # --- cert-manager: mutate ---
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates", "certificaterequests", "issuers"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates/status"]
+    verbs     = ["update"]
+  },
+  {
+    apiGroups = ["acme.cert-manager.io"]
+    resources = ["challenges", "orders"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- cert-manager: read ---
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates", "certificaterequests", "issuers"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["acme.cert-manager.io"]
+    resources = ["challenges", "orders"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: read (pods/exec, proxy, etc.) ---
+  # MODIFIED: added "secrets" so Helm lookups (e.g. common.secrets.lookup) work
+  {
+    apiGroups = [""]
+    resources = ["pods/attach", "pods/exec", "pods/portforward", "pods/proxy", "secrets", "services/proxy"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: impersonate ---
+  {
+    apiGroups = [""]
+    resources = ["serviceaccounts"]
+    verbs     = ["impersonate"]
+  },
+
+  # --- core API: mutate pods ---
+  {
+    apiGroups = [""]
+    resources = ["pods", "pods/attach", "pods/exec", "pods/portforward", "pods/proxy"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["pods/eviction"]
+    verbs     = ["create"]
+  },
+
+  # --- core API: mutate other resources ---
+  {
+    apiGroups = [""]
+    resources = ["configmaps", "events", "persistentvolumeclaims", "replicationcontrollers", "replicationcontrollers/scale", "secrets", "serviceaccounts", "services", "services/proxy"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["serviceaccounts/token"]
+    verbs     = ["create"]
+  },
+
+  # --- apps: mutate ---
+  {
+    apiGroups = ["apps"]
+    resources = ["daemonsets", "deployments", "deployments/rollback", "deployments/scale", "replicasets", "replicasets/scale", "statefulsets", "statefulsets/scale"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- autoscaling: mutate ---
+  {
+    apiGroups = ["autoscaling"]
+    resources = ["horizontalpodautoscalers"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- batch: mutate ---
+  {
+    apiGroups = ["batch"]
+    resources = ["cronjobs", "jobs"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- extensions: mutate ---
+  {
+    apiGroups = ["extensions"]
+    resources = ["daemonsets", "deployments", "deployments/rollback", "deployments/scale", "ingresses", "networkpolicies", "replicasets", "replicasets/scale", "replicationcontrollers/scale"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- policy: mutate ---
+  {
+    apiGroups = ["policy"]
+    resources = ["poddisruptionbudgets"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- networking: mutate ---
+  {
+    apiGroups = ["networking.k8s.io"]
+    resources = ["ingresses", "networkpolicies"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- coordination: full ---
+  {
+    apiGroups = ["coordination.k8s.io"]
+    resources = ["leases"]
+    verbs     = ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  },
+
+  # --- metrics: read ---
+  {
+    apiGroups = ["metrics.k8s.io"]
+    resources = ["pods", "nodes"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- kyverno: read ---
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["cleanuppolicies", "clustercleanuppolicies", "policies", "clusterpolicies"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["wgpolicyk8s.io"]
+    resources = ["policyreports", "clusterpolicyreports"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["reports.kyverno.io"]
+    resources = ["ephemeralreports", "clusterephemeralreports"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["updaterequests"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: read common resources ---
+  {
+    apiGroups = [""]
+    resources = ["configmaps", "endpoints", "persistentvolumeclaims", "persistentvolumeclaims/status", "pods", "replicationcontrollers", "replicationcontrollers/scale", "serviceaccounts", "services", "services/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["bindings", "events", "limitranges", "namespaces/status", "pods/log", "pods/status", "replicationcontrollers/status", "resourcequotas", "resourcequotas/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: namespaces (full) ---
+  {
+    apiGroups = [""]
+    resources = ["namespaces"]
+    verbs     = ["*"]
+  },
+
+  # --- discovery: read ---
+  {
+    apiGroups = ["discovery.k8s.io"]
+    resources = ["endpointslices"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- apps: read ---
+  {
+    apiGroups = ["apps"]
+    resources = ["controllerrevisions", "daemonsets", "daemonsets/status", "deployments", "deployments/scale", "deployments/status", "replicasets", "replicasets/scale", "replicasets/status", "statefulsets", "statefulsets/scale", "statefulsets/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- autoscaling: read ---
+  {
+    apiGroups = ["autoscaling"]
+    resources = ["horizontalpodautoscalers", "horizontalpodautoscalers/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- batch: read ---
+  {
+    apiGroups = ["batch"]
+    resources = ["cronjobs", "cronjobs/status", "jobs", "jobs/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- extensions: read ---
+  {
+    apiGroups = ["extensions"]
+    resources = ["daemonsets", "daemonsets/status", "deployments", "deployments/scale", "deployments/status", "ingresses", "ingresses/status", "networkpolicies", "replicasets", "replicasets/scale", "replicasets/status", "replicationcontrollers/scale"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- policy: read ---
+  {
+    apiGroups = ["policy"]
+    resources = ["poddisruptionbudgets", "poddisruptionbudgets/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- networking: read ---
+  {
+    apiGroups = ["networking.k8s.io"]
+    resources = ["ingresses", "ingresses/status", "networkpolicies"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- kyverno: full ---
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["cleanuppolicies", "clustercleanuppolicies", "policies", "clusterpolicies"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["wgpolicyk8s.io"]
+    resources = ["policyreports", "clusterpolicyreports"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["reports.kyverno.io"]
+    resources = ["ephemeralreports", "clusterephemeralreports"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["updaterequests"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+
+  # --- authorization: create ---
+  {
+    apiGroups = ["authorization.k8s.io"]
+    resources = ["localsubjectaccessreviews"]
+    verbs     = ["create"]
+  },
+
+  # --- rbac: full ---
+  {
+    apiGroups = ["rbac.authorization.k8s.io"]
+    resources = ["rolebindings", "roles"]
+    verbs     = ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  },
+]
+`;
 
 function generatePermissions(): GeneratedFile[] {
   const phases: [string, string][] = [
@@ -1213,7 +1483,7 @@ export function generateNuonConfig(
   files.push(generateMetadata(chartName, description));
   files.push(generateInputs(chartName, allDeps));
 
-  files.push(generateSandbox(provider));
+  files.push(...generateSandbox(provider));
   files.push(generateRunner(provider));
   files.push(generateStack(chartName));
   files.push(generateBreakGlass());
