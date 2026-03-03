@@ -277,6 +277,11 @@ function emitPasswordOverrides(fields: PasswordField[]): string {
 // Individual file generators
 // ---------------------------------------------------------------------------
 
+/** Sanitize a string for use as a Nuon component name (lowercase alphanumeric, underscores, dots). */
+function toComponentName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9_.{}]/g, "_");
+}
+
 function generateMetadata(chartName: string, description: string): GeneratedFile {
   const desc = description || `Nuon BYOC config for ${chartName}`;
   return {
@@ -1065,11 +1070,12 @@ function generateAppComponent(
     ? `\n#\n# TODO: Update [public_repo] repo to point to the GitHub repo where you push this config.\n# The chart files are bundled under components/chart/${chartName}/`
     : "";
 
+  const compName = toComponentName(chartName);
   return {
     filename: `components/${componentNumber}-${chartName}.toml`,
     language: "toml",
     content: `# helm
-name = "${esc(chartName)}"
+name = "${esc(compName)}"
 type = "helm_chart"
 chart_name = "${esc(chartName)}"
 namespace = "${esc(namespace)}"
@@ -1620,6 +1626,20 @@ export function validateGeneratedConfig(
         severity: "warning",
         message: `Chart points at ${repoMatch[1]} subdirectory "${dirMatch[1]}". If this is a monorepo, cloning may time out. Enable "Bundle into config repo" to avoid this.`,
         file: helmToml.filename,
+      });
+    }
+  }
+
+  const compNamePattern = /^name = "([^"]+)"/m;
+  const validCompName = /^[a-z0-9_.{}]+$/;
+  for (const file of files) {
+    if (!file.filename.match(/components\/\d+-.*\.toml$/)) continue;
+    const nameMatch = file.content.match(compNamePattern);
+    if (nameMatch && !validCompName.test(nameMatch[1])) {
+      warnings.push({
+        severity: "error",
+        message: `Component name "${nameMatch[1]}" contains invalid characters — only lowercase letters, numbers, underscores, dots, and curly braces are allowed`,
+        file: file.filename,
       });
     }
   }
