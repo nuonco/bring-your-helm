@@ -31,8 +31,22 @@ async function ghFetchJson<T = any>(url: string): Promise<T> {
   return data as T;
 }
 
+const OWNER_REPO_RE = /^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+?)(?:\/.*)?$/;
+
 export async function searchRepos(query: string): Promise<GitHubRepo[]> {
   if (!query.trim()) return [];
+
+  // If query looks like "org/repo" or "org/repo/subdir", try exact lookup first
+  const match = query.trim().match(OWNER_REPO_RE);
+  if (match) {
+    try {
+      const repo = await ghFetchJson<GitHubRepo>(`${GITHUB_API}/repos/${match[1]}/${match[2]}`);
+      return [repo];
+    } catch {
+      // Exact match failed — fall through to search
+    }
+  }
+
   const data = await ghFetchJson<{ items: GitHubRepo[] }>(
     `${GITHUB_API}/search/repositories?q=${encodeURIComponent(query)}&sort=stars&per_page=8`
   );
