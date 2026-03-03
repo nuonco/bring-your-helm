@@ -1643,7 +1643,7 @@ export function validateGeneratedConfig(
     });
   }
 
-  const valuesFile = files.find((f) => f.filename.endsWith("values.yaml"));
+  const valuesFile = files.find((f) => f.filename.startsWith("components/values/") && f.filename.endsWith("/values.yaml"));
   if (valuesFile && !valuesFile.content.includes("Full chart values")) {
     warnings.push({
       severity: "warning",
