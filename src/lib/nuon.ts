@@ -1086,15 +1086,31 @@ function inferLanguage(path: string): string {
   return "plaintext";
 }
 
+// Only these extensions belong inside a Helm templates/ directory.
+// Anything else (CLAUDE.md, README.md, etc.) causes Helm to fail with
+// "YAML parse error … cannot unmarshal string into Go value".
+const HELM_TEMPLATE_EXTENSIONS = new Set([".yaml", ".yml", ".tpl", ".txt", ".json"]);
+
+function isValidTemplateFile(relativePath: string): boolean {
+  // Only filter files directly under or nested in a templates/ directory
+  const parts = relativePath.split("/");
+  const inTemplates = parts.some((p) => p === "templates");
+  if (!inTemplates) return true;
+  const ext = relativePath.slice(relativePath.lastIndexOf(".")).toLowerCase();
+  return HELM_TEMPLATE_EXTENSIONS.has(ext);
+}
+
 function generateBundledChartFiles(
   chartName: string,
   chartFiles: ChartFile[],
 ): GeneratedFile[] {
-  return chartFiles.map((cf) => ({
-    filename: `components/chart/${chartName}/${cf.relativePath}`,
-    language: inferLanguage(cf.relativePath),
-    content: cf.content,
-  }));
+  return chartFiles
+    .filter((cf) => isValidTemplateFile(cf.relativePath))
+    .map((cf) => ({
+      filename: `components/chart/${chartName}/${cf.relativePath}`,
+      language: inferLanguage(cf.relativePath),
+      content: cf.content,
+    }));
 }
 
 function generateDbCredentialsAction(chartName: string, namespace: string): GeneratedFile {
