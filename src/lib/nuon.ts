@@ -289,7 +289,7 @@ display_name = "${esc(chartName)}"`,
   };
 }
 
-function generateSandbox(cloudProvider: string): GeneratedFile[] {
+function generateSandbox(cloudProvider: string, enableDns: boolean): GeneratedFile[] {
   if (cloudProvider === "azure") {
     return [{
       filename: "sandbox.toml",
@@ -304,6 +304,15 @@ branch = "main"
 directory = "."`,
     }];
   }
+
+  const varsLines: string[] = [];
+  if (enableDns) {
+    varsLines.push('enable_nuon_dns = "true"');
+  }
+  const varsBlock = varsLines.length > 0
+    ? `\n[vars]\n${varsLines.join("\n")}\n`
+    : "";
+
   return [
     {
       filename: "sandbox.toml",
@@ -316,7 +325,7 @@ terraform_version = "1.11.3"
 repo = "nuonco/aws-eks-sandbox"
 branch = "main"
 directory = "."
-
+${varsBlock}
 # Override maintenance ClusterRole to allow reading secrets
 # (required by Helm charts that use common.secrets.lookup)
 [[var_file]]
@@ -1494,12 +1503,25 @@ export function generateNuonConfig(
   const autoDetected = detectInfraDeps(chart.dependencies || []);
   const allDeps = [...new Set([...autoDetected, ...options.infraDeps])];
 
+  // Detect ingress so sandbox can enable Nuon DNS (required for nuon_dns template vars)
+  let hasIngress = false;
+  if (valuesYaml) {
+    try {
+      const parsed = yaml.load(valuesYaml) as Record<string, unknown> | null;
+      if (parsed && typeof parsed === "object") {
+        hasIngress = detectIngressStructure(parsed) !== null;
+      }
+    } catch {
+      // values YAML parse failure — will be handled downstream
+    }
+  }
+
   const files: GeneratedFile[] = [];
 
   files.push(generateMetadata(chartName, description));
   files.push(generateInputs(chartName, allDeps));
 
-  files.push(...generateSandbox(provider));
+  files.push(...generateSandbox(provider, hasIngress));
   files.push(generateRunner(provider));
   files.push(generateStack(chartName));
   files.push(generateBreakGlass());
