@@ -193,7 +193,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
 
   const tree = useMemo(() => buildTree(files), [files]);
 
-  const valuesFile = files.find((f) => f.filename.endsWith("values.yaml"));
+  const valuesFile = files.find((f) => f.filename.endsWith("/values.yaml") && !f.filename.startsWith("components/chart/"));
   const [selectedFile, setSelectedFile] = useState<GeneratedFile>(valuesFile || files[0]);
   const [copied, setCopied] = useState(false);
   const [showCode, setShowCode] = useState(true);
