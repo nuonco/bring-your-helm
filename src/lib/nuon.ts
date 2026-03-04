@@ -1456,7 +1456,7 @@ export function generateValuesFile(
   // 7. Append external service blocks
   if (hasDb || hasRedis) {
     lines.push("");
-    lines.push("# --- Infrastructure wiring added by byocify ---");
+    lines.push("# --- Infrastructure wiring added by bring-your-helm ---");
     lines.push("# These connect your app to Nuon-managed cloud services.");
     lines.push("# Adjust field names to match your chart's external service configuration.");
   }
@@ -1624,9 +1624,11 @@ export function validateGeneratedConfig(
   );
 
   if (!options.configRepo && hasInfraComponents) {
+    // When using helm_repo, the chart component itself is fine — only infra Terraform has the placeholder
+    const severity = options.chartSource.type === "helm_repo" ? "warning" : "error";
     warnings.push({
-      severity: "error",
-      message: "Config repository not set — infrastructure component TOML files contain \"YOUR_ORG/YOUR_REPO\" placeholder",
+      severity,
+      message: "Config repository not set — infrastructure Terraform components contain \"YOUR_ORG/YOUR_REPO\" placeholder. Update after pushing to GitHub.",
     });
   }
 
@@ -1676,13 +1678,6 @@ export function validateGeneratedConfig(
         file: file.filename,
       });
     }
-  }
-
-  if (!options.namespace) {
-    warnings.push({
-      severity: "warning",
-      message: "Namespace not set — will default to chart name",
-    });
   }
 
   const valuesFile = files.find((f) => f.filename.endsWith("/values.yaml") && !f.filename.startsWith("components/chart/"));

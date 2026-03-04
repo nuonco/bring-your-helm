@@ -230,3 +230,20 @@ export async function getUserRepos(token: string): Promise<GitHubRepo[]> {
     token,
   );
 }
+
+/**
+ * Check if a repo likely contains a Helm chart by searching for Chart.yaml.
+ * Uses the GitHub code search API with a per-repo scope.
+ * Returns true if Chart.yaml is found, false otherwise.
+ */
+export async function repoHasHelmChart(owner: string, repo: string, token: string): Promise<boolean> {
+  try {
+    const data = await ghFetchJson<{ total_count: number }>(
+      `${GITHUB_API}/search/code?q=filename:Chart.yaml+repo:${owner}/${repo}&per_page=1`,
+      token,
+    );
+    return data.total_count > 0;
+  } catch {
+    return false;
+  }
+}
