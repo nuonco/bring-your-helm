@@ -1,15 +1,17 @@
 import { useEffect, useState, useMemo } from "react";
 import { getFileContent, fetchChartFiles } from "@/lib/github";
 import { detectInfraDeps } from "@/lib/nuon";
-import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions, ChartFile } from "@/lib/types";
+import { searchArtifactHub, pickBestMatch } from "@/lib/artifacthub";
+import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions, ChartFile, ArtifactHubMatch, ChartSource } from "@/lib/types";
 import {
   ArrowLeft,
   ArrowRight,
   Loader2,
-  CheckCircle2,
   Info,
   FileText,
   Folder,
+  ChevronDown,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -31,6 +33,8 @@ interface StepValuesEditorProps {
   valuesYaml: string;
   configOptions: ConfigOptions;
   chartFiles: ChartFile[];
+  helmRepoMatches: ArtifactHubMatch[];
+  helmRepoLoading: boolean;
   dispatch: React.Dispatch<WizardAction>;
   onNext: () => void;
   onBack: () => void;
@@ -42,12 +46,15 @@ export function StepValuesEditor({
   valuesYaml,
   configOptions,
   chartFiles,
+  helmRepoMatches,
+  helmRepoLoading,
   dispatch,
   onNext,
   onBack,
 }: StepValuesEditorProps) {
   const [loading, setLoading] = useState(!valuesYaml);
   const [chartFilesLoading, setChartFilesLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const isMonorepo = useMemo(() => {
     const p = chart.path || ".";
@@ -59,20 +66,38 @@ export function StepValuesEditor({
     [chart.dependencies]
   );
 
+  // Auto-detect ArtifactHub match on mount
+  useEffect(() => {
+    if (helmRepoMatches.length > 0) return; // already searched
+    dispatch({ type: "SET_HELM_REPO_LOADING", loading: true });
+    searchArtifactHub(chart.name)
+      .then((matches) => {
+        dispatch({ type: "SET_HELM_REPO_MATCHES", matches });
+        const best = pickBestMatch(matches, chart.name, repo.owner.login);
+        if (best) {
+          dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: { type: "helm_repo", match: best } } });
+        } else if (isMonorepo) {
+          // No ArtifactHub match + monorepo → bundle by default
+          handleEnableBundle();
+        }
+      })
+      .catch(() => {
+        // ArtifactHub search failed — fall back
+        if (isMonorepo) handleEnableBundle();
+      })
+      .finally(() => {
+        dispatch({ type: "SET_HELM_REPO_LOADING", loading: false });
+      });
+  }, [chart.name]);
+
   useEffect(() => {
     if (autoDetectedDeps.length > 0 && configOptions.infraDeps.length === 0) {
       dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraDeps: autoDetectedDeps } });
     }
   }, [autoDetectedDeps, configOptions.infraDeps.length, dispatch]);
 
-  useEffect(() => {
-    if (isMonorepo && !configOptions.bundleChart) {
-      handleEnableBundle();
-    }
-  }, []);
-
   const handleEnableBundle = async () => {
-    dispatch({ type: "SET_CONFIG_OPTIONS", options: { bundleChart: true } });
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: { type: "bundle" } } });
     if (chartFiles.length > 0) return;
     setChartFilesLoading(true);
     try {
@@ -83,6 +108,13 @@ export function StepValuesEditor({
       console.error("Failed to fetch chart files:", err);
     } finally {
       setChartFilesLoading(false);
+    }
+  };
+
+  const setChartSource = (source: ChartSource) => {
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: source } });
+    if (source.type === "bundle" && chartFiles.length === 0) {
+      handleEnableBundle();
     }
   };
 
@@ -130,6 +162,12 @@ export function StepValuesEditor({
     if (hasDb) items.push({ label: "db-credentials action", desc: "Copies database secrets into Kubernetes after provisioning" });
     return items;
   }, [configOptions.infraDeps, chart.name]);
+
+  // Find the best ArtifactHub match for display
+  const bestMatch = useMemo(
+    () => pickBestMatch(helmRepoMatches, chart.name, repo.owner.login),
+    [helmRepoMatches, chart.name, repo.owner.login]
+  );
 
   if (loading) {
     return (
@@ -329,65 +367,150 @@ export function StepValuesEditor({
                   <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-[280px] text-xs leading-relaxed">
-                  Controls where the Nuon runner fetches the Helm chart from at deploy time. For monorepos with many charts, bundling avoids slow clones.
+                  Controls where the Nuon runner fetches the Helm chart from at deploy time.
                 </TooltipContent>
               </Tooltip>
             </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              {isMonorepo
-                ? "This chart lives in a large repository. Bundling avoids slow build clones."
-                : "Where the Nuon runner fetches the Helm chart at deploy time."}
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <label className={cn(
-                "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
-                !configOptions.bundleChart ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
-              )}>
-                <input
-                  type="radio"
-                  name="chartSource"
-                  checked={!configOptions.bundleChart}
-                  onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { bundleChart: false } })}
-                  className="accent-primary mt-0.5"
-                />
-                <div>
-                  <span className="text-sm font-medium text-foreground">Upstream repo</span>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Runner clones <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+
+            {helmRepoLoading ? (
+              <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Looking up chart on ArtifactHub...
+              </div>
+            ) : configOptions.chartSource.type === "helm_repo" ? (
+              <>
+                {/* Helm repo match — clean confirmation */}
+                <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm text-foreground">
+                    <ExternalLink className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <span>
+                      Chart will be pulled from{" "}
+                      <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">
+                        {configOptions.chartSource.match.repoUrl}
+                      </code>
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5 ml-[22px]">
+                    {configOptions.chartSource.match.name} v{configOptions.chartSource.match.version} — from {configOptions.chartSource.match.repoName}
                   </p>
                 </div>
-              </label>
-              <label className={cn(
-                "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
-                configOptions.bundleChart ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
-              )}>
-                <input
-                  type="radio"
-                  name="chartSource"
-                  checked={configOptions.bundleChart}
-                  onChange={() => handleEnableBundle()}
-                  className="accent-primary mt-0.5"
-                />
-                <div>
-                  <span className="text-sm font-medium text-foreground">
-                    Bundle into config repo
-                    {isMonorepo && (
-                      <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-2">recommended</span>
-                    )}
-                  </span>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Chart files included in the ZIP — runner clones your config repo
+
+                {/* Advanced options disclosure */}
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ChevronDown className={cn("w-3 h-3 transition-transform", showAdvanced && "rotate-180")} />
+                  Advanced options
+                </button>
+                {showAdvanced && (
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className={cn(
+                      "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                      "border-border hover:bg-muted/40"
+                    )}>
+                      <input
+                        type="radio"
+                        name="chartSourceAlt"
+                        checked={false}
+                        onChange={() => setChartSource({ type: "upstream_repo" })}
+                        className="accent-primary mt-0.5"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-foreground">Upstream repo</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Clone from <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+                        </p>
+                      </div>
+                    </label>
+                    <label className={cn(
+                      "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                      "border-border hover:bg-muted/40"
+                    )}>
+                      <input
+                        type="radio"
+                        name="chartSourceAlt"
+                        checked={false}
+                        onChange={() => setChartSource({ type: "bundle" })}
+                        className="accent-primary mt-0.5"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-foreground">Bundle into config repo</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Include chart files in the ZIP
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* No ArtifactHub match — show fallback notice + toggle */}
+                {bestMatch === null && helmRepoMatches.length === 0 && !helmRepoLoading && (
+                  <p className="text-xs text-muted-foreground mb-3">
+                    {isMonorepo
+                      ? "This chart lives in a large repository. Bundling avoids slow build clones."
+                      : "No Helm repository found for this chart. Choose where the runner fetches it at deploy time."}
                   </p>
+                )}
+                {bestMatch === null && helmRepoMatches.length > 0 && (
+                  <p className="text-xs text-muted-foreground mb-3">
+                    No exact Helm repository match found. Choose how to fetch the chart at deploy time.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={cn(
+                    "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                    configOptions.chartSource.type === "upstream_repo" ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+                  )}>
+                    <input
+                      type="radio"
+                      name="chartSource"
+                      checked={configOptions.chartSource.type === "upstream_repo"}
+                      onChange={() => setChartSource({ type: "upstream_repo" })}
+                      className="accent-primary mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-foreground">Upstream repo</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Runner clones <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+                      </p>
+                    </div>
+                  </label>
+                  <label className={cn(
+                    "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                    configOptions.chartSource.type === "bundle" ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+                  )}>
+                    <input
+                      type="radio"
+                      name="chartSource"
+                      checked={configOptions.chartSource.type === "bundle"}
+                      onChange={() => setChartSource({ type: "bundle" })}
+                      className="accent-primary mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-foreground">
+                        Bundle into config repo
+                        {isMonorepo && (
+                          <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-2">recommended</span>
+                        )}
+                      </span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Chart files included in the ZIP — runner clones your config repo
+                      </p>
+                    </div>
+                  </label>
                 </div>
-              </label>
-            </div>
+              </>
+            )}
             {chartFilesLoading && (
               <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
                 <Loader2 className="w-3 h-3 animate-spin" />
                 Fetching chart files...
               </div>
             )}
-            {configOptions.bundleChart && chartFiles.length > 0 && !chartFilesLoading && (
+            {configOptions.chartSource.type === "bundle" && chartFiles.length > 0 && !chartFilesLoading && (
               <p className="text-xs text-primary mt-3">
                 {chartFiles.length} chart file(s) will be bundled
               </p>

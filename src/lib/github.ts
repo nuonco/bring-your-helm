@@ -6,10 +6,20 @@ const GITHUB_API = "https://api.github.com";
 const cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
-async function ghFetch(url: string): Promise<Response> {
-  const res = await fetch(url, {
-    headers: { Accept: "application/vnd.github+json" },
-  });
+// Module-level token — set via setAuthToken() from the auth context
+let _authToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  _authToken = token;
+}
+
+async function ghFetch(url: string, token?: string): Promise<Response> {
+  const effectiveToken = token ?? _authToken;
+  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+  if (effectiveToken) {
+    headers.Authorization = `Bearer ${effectiveToken}`;
+  }
+  const res = await fetch(url, { headers });
   if (res.status === 403 || res.status === 429) {
     throw new Error("GitHub API rate limit reached. Please wait a minute and try again.");
   }
@@ -20,14 +30,15 @@ async function ghFetch(url: string): Promise<Response> {
   return res;
 }
 
-async function ghFetchJson<T = any>(url: string): Promise<T> {
-  const cached = cache.get(url);
+async function ghFetchJson<T = any>(url: string, token?: string): Promise<T> {
+  const cacheKey = `${url}:${token ?? _authToken ?? "anon"}`;
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
     return cached.data as T;
   }
-  const res = await ghFetch(url);
+  const res = await ghFetch(url, token);
   const data = await res.json();
-  cache.set(url, { data, ts: Date.now() });
+  cache.set(cacheKey, { data, ts: Date.now() });
   return data as T;
 }
 
@@ -211,4 +222,11 @@ export async function fetchChartFiles(
     }
   }
   return results;
+}
+
+export async function getUserRepos(token: string): Promise<GitHubRepo[]> {
+  return ghFetchJson<GitHubRepo[]>(
+    `${GITHUB_API}/user/repos?sort=updated&per_page=20&type=owner`,
+    token,
+  );
 }

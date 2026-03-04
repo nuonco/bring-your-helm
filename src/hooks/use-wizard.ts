@@ -15,7 +15,7 @@ const defaultConfigOptions: ConfigOptions = {
   namespace: "",
   configRepo: "",
   infraDeps: [],
-  bundleChart: false,
+  chartSource: { type: "upstream_repo" },
 };
 
 const initialState: WizardState = {
@@ -27,6 +27,8 @@ const initialState: WizardState = {
   editedValuesYaml: "",
   configOptions: defaultConfigOptions,
   chartFiles: [],
+  helmRepoMatches: [],
+  helmRepoLoading: false,
 };
 
 function reducer(state: WizardState, action: WizardAction): WizardState {
@@ -47,6 +49,10 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, configOptions: { ...state.configOptions, ...action.options } };
     case "SET_CHART_FILES":
       return { ...state, chartFiles: action.files };
+    case "SET_HELM_REPO_MATCHES":
+      return { ...state, helmRepoMatches: action.matches };
+    case "SET_HELM_REPO_LOADING":
+      return { ...state, helmRepoLoading: action.loading };
     case "RESET":
       return initialState;
     default:

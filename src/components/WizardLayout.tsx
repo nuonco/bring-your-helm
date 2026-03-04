@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
-import { Sun, Moon, Share2, BookOpen, Link, Check } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
+import { Sun, Moon, Share2, BookOpen, Link, Check, LogIn, LogOut } from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 
 function NuonLogo({ className }: { className?: string }) {
@@ -35,6 +36,7 @@ export function WizardLayout({
   onReset,
 }: WizardLayoutProps) {
   const { theme, toggle } = useTheme();
+  const { isAuthenticated, isConfigured, user, signIn, signOut } = useAuth();
   const progress = totalSteps > 0 ? (currentStep / totalSteps) * 100 : 0;
   const isLanding = currentStep === 0;
   const isFullscreen = currentStep === 2 || currentStep === 3;
@@ -162,6 +164,27 @@ export function WizardLayout({
                 </div>
               )}
             </div>
+            {isConfigured && !isAuthenticated && (
+              <button
+                onClick={signIn}
+                className="h-8 px-3 rounded-lg border border-border bg-card flex items-center gap-1.5 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                <LogIn className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline">Sign in with GitHub</span>
+              </button>
+            )}
+            {isAuthenticated && user && (
+              <div className="flex items-center gap-1.5">
+                <img src={user.avatar_url} alt="" className="w-7 h-7 rounded-full" />
+                <button
+                  onClick={signOut}
+                  className="h-8 w-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Sign out"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
             <button
               onClick={toggle}
               className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

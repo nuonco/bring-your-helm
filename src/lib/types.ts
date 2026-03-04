@@ -36,13 +36,27 @@ export interface ChartFile {
   content: string;
 }
 
+export interface ArtifactHubMatch {
+  name: string;
+  version: string;
+  repoUrl: string;
+  repoName: string;
+  description: string;
+  stars: number;
+}
+
+export type ChartSource =
+  | { type: "helm_repo"; match: ArtifactHubMatch }
+  | { type: "upstream_repo" }
+  | { type: "bundle" };
+
 export interface ConfigOptions {
   cloudProvider: "aws" | "azure";
   infraMode: "default" | "bring-vpc";
   namespace: string;
   configRepo: string;
   infraDeps: string[];
-  bundleChart: boolean;
+  chartSource: ChartSource;
 }
 
 export interface WizardState {
@@ -55,6 +69,8 @@ export interface WizardState {
   editedValuesYaml: string;
   configOptions: ConfigOptions;
   chartFiles: ChartFile[];
+  helmRepoMatches: ArtifactHubMatch[];
+  helmRepoLoading: boolean;
 }
 
 export type WizardAction =
@@ -66,4 +82,6 @@ export type WizardAction =
   | { type: "SET_EDITED_VALUES"; yaml: string }
   | { type: "SET_CONFIG_OPTIONS"; options: Partial<ConfigOptions> }
   | { type: "SET_CHART_FILES"; files: ChartFile[] }
+  | { type: "SET_HELM_REPO_MATCHES"; matches: ArtifactHubMatch[] }
+  | { type: "SET_HELM_REPO_LOADING"; loading: boolean }
   | { type: "RESET" };

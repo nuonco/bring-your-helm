@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { ArrowRight, Loader2, Star, Search, Plus, Package, ChevronDown, Cloud, Download, FileText } from "lucide-react";
+import { ArrowRight, Loader2, Star, Search, Plus, Package, ChevronDown, Cloud, Download, FileText, User } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { searchRepos, parseRepoUrl, getRepoByFullName } from "@/lib/github";
+import { searchRepos, parseRepoUrl, getRepoByFullName, getUserRepos } from "@/lib/github";
+import { useAuth } from "@/hooks/use-auth";
 import type { GitHubRepo, WizardAction } from "@/lib/types";
 
 interface CommunityConfig {
@@ -95,6 +96,7 @@ interface StepSearchProps {
 }
 
 export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProps) {
+  const { token, isAuthenticated } = useAuth();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GitHubRepo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -105,6 +107,17 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   const inputRef = useRef<HTMLInputElement>(null);
   const [expandedBlock, setExpandedBlock] = useState<number | null>(null);
   const toggleBlock = (index: number) => setExpandedBlock(prev => prev === index ? null : index);
+  const [userRepos, setUserRepos] = useState<GitHubRepo[]>([]);
+  const [userReposLoading, setUserReposLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    setUserReposLoading(true);
+    getUserRepos(token)
+      .then(setUserRepos)
+      .catch(() => setUserRepos([]))
+      .finally(() => setUserReposLoading(false));
+  }, [isAuthenticated, token]);
 
   const communityConfigs = useMemo<CommunityConfig[]>(() => {
     try {
@@ -247,6 +260,42 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
           </div>
         )}
       </div>
+
+      {/* Your Repositories — when signed in */}
+      {isAuthenticated && userRepos.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <User className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Your Repositories</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">
+            {userRepos.slice(0, 6).map((repo) => (
+              <button
+                key={repo.id}
+                onClick={() => selectRepo(repo)}
+                className="text-left px-5 py-4 bg-card hover:bg-muted/30 transition-all group flex items-start gap-3"
+              >
+                <img src={repo.owner.avatar_url} alt="" className="w-5 h-5 rounded-full mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-base font-medium text-foreground group-hover:text-primary transition-colors truncate">
+                    {repo.full_name}
+                  </div>
+                  {repo.description && (
+                    <div className="text-sm text-muted-foreground mt-0.5 line-clamp-1">{repo.description}</div>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {isAuthenticated && userReposLoading && (
+        <div className="flex items-center gap-2 mb-8 text-sm text-muted-foreground justify-center">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading your repositories...
+        </div>
+      )}
 
       {/* Card grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">

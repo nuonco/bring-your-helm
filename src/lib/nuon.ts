@@ -1,4 +1,4 @@
-import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency, ChartFile } from "./types";
+import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency, ChartFile, ChartSource } from "./types";
 import yaml from "js-yaml";
 
 // ---------------------------------------------------------------------------
@@ -1044,33 +1044,56 @@ function generateAppComponent(
   org: string,
   repo: string,
   directory: string,
-  branch: string,
+  _branch: string,
   namespace: string,
   depComponentNames: string[],
   componentNumber: number,
-  bundleChart: boolean,
+  chartSource: ChartSource,
   configRepo: string,
 ): GeneratedFile {
   const depLine = depComponentNames.length > 0
     ? `dependencies = [${depComponentNames.map((d) => `"${d}"`).join(", ")}]`
     : "# dependencies = []";
 
+  const compName = toComponentName(chartName);
+  const valuesBlock = `\n[[values_file]]\ncontents = "./values/${esc(chartName)}/values.yaml"`;
+
+  if (chartSource.type === "helm_repo") {
+    const m = chartSource.match;
+    return {
+      filename: `components/${componentNumber}-${chartName}.toml`,
+      language: "toml",
+      content: `# helm
+name = "${esc(compName)}"
+type = "helm_chart"
+chart_name = "${esc(chartName)}"
+namespace = "${esc(namespace)}"
+storage_driver = "configmap"
+${depLine}
+
+[helm_repo]
+repo_url = "${esc(m.repoUrl)}"
+chart    = "${esc(m.name)}"
+version  = "${esc(m.version)}"
+${valuesBlock}`,
+    };
+  }
+
   let repoRef: string;
   let dirRef: string;
+  let todo = "";
 
-  if (bundleChart) {
+  if (chartSource.type === "bundle") {
     repoRef = configRepo || "YOUR_ORG/YOUR_REPO";
     dirRef = `components/chart/${chartName}`;
+    if (!configRepo) {
+      todo = `\n#\n# TODO: Update [public_repo] repo to point to the GitHub repo where you push this config.\n# The chart files are bundled under components/chart/${chartName}/`;
+    }
   } else {
     repoRef = `${org}/${repo}`;
     dirRef = directory;
   }
 
-  const todo = bundleChart && !configRepo
-    ? `\n#\n# TODO: Update [public_repo] repo to point to the GitHub repo where you push this config.\n# The chart files are bundled under components/chart/${chartName}/`
-    : "";
-
-  const compName = toComponentName(chartName);
   return {
     filename: `components/${componentNumber}-${chartName}.toml`,
     language: "toml",
@@ -1086,9 +1109,7 @@ ${depLine}${todo}
 repo = "${esc(repoRef)}"
 directory = "${esc(dirRef)}"
 branch = "main"
-
-[[values_file]]
-contents = "./values/${esc(chartName)}/values.yaml"`,
+${valuesBlock}`,
   };
 }
 
@@ -1504,7 +1525,8 @@ export function generateNuonConfig(
   const [org, repo] = repoFullName.split("/");
   const branch = "main";
   const directory = chart.path || ".";
-  const shouldBundle = options.bundleChart && chartFiles.length > 0;
+  const chartSource = options.chartSource;
+  const shouldBundle = chartSource.type === "bundle" && chartFiles.length > 0;
 
   const autoDetected = detectInfraDeps(chart.dependencies || []);
   const allDeps = [...new Set([...autoDetected, ...options.infraDeps])];
@@ -1563,7 +1585,7 @@ export function generateNuonConfig(
   files.push(generateAppComponent(
     chartName, org, repo, directory, branch, ns,
     infraComponentNames, compNumber,
-    shouldBundle, repoRef,
+    chartSource, repoRef,
   ));
 
   if (shouldBundle) {
@@ -1608,7 +1630,7 @@ export function validateGeneratedConfig(
     });
   }
 
-  if (options.bundleChart && !options.configRepo) {
+  if (options.chartSource.type === "bundle" && !options.configRepo) {
     warnings.push({
       severity: "error",
       message: "Config repository not set — the bundled helm chart component references \"YOUR_ORG/YOUR_REPO\"",
@@ -1618,13 +1640,13 @@ export function validateGeneratedConfig(
   const helmToml = files.find(
     (f) => f.filename.match(/components\/\d+-.*\.toml$/) && f.content.includes('type = "helm_chart"')
   );
-  if (helmToml && !options.bundleChart) {
+  if (helmToml && options.chartSource.type === "upstream_repo") {
     const repoMatch = helmToml.content.match(/repo = "(.+)"/);
     const dirMatch = helmToml.content.match(/directory = "(.+)"/);
     if (repoMatch && dirMatch && dirMatch[1] !== ".") {
       warnings.push({
         severity: "warning",
-        message: `Chart points at ${repoMatch[1]} subdirectory "${dirMatch[1]}". If this is a monorepo, cloning may time out. Enable "Bundle into config repo" to avoid this.`,
+        message: `Chart points at ${repoMatch[1]} subdirectory "${dirMatch[1]}". If this is a monorepo, cloning may time out. Consider using a Helm repository or bundling instead.`,
         file: helmToml.filename,
       });
     }
