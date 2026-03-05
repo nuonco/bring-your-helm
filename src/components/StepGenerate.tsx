@@ -606,7 +606,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
 
                       <div className="mt-4 pt-3 border-t border-border">
                         <a
-                          href="https://docs.nuon.co/quickstart"
+                          href="https://docs.nuon.co/get-started/quickstart"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-2 text-sm text-primary hover:underline"

@@ -637,7 +637,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <a
-              href="https://docs.nuon.co/quickstart"
+              href="https://docs.nuon.co/get-started/quickstart"
               target="_blank"
               rel="noopener noreferrer"
               className="px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium text-foreground hover:bg-muted transition-colors"
