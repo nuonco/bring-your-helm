@@ -228,7 +228,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         Turn any Helm chart into a BYOC app
       </h1>
       <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
-        Set up your <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes. One&#x2011;click installs for your customers.
+        Set up your <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes.<br />One&#x2011;click installs for your customers.
       </p>
 
       {/* Search bar */}
