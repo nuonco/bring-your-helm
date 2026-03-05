@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { getFileContent, fetchChartFiles } from "@/lib/github";
 import { detectInfraDeps } from "@/lib/nuon";
 import { searchArtifactHub, pickBestMatch } from "@/lib/artifacthub";
+import { trackEvent } from "@/lib/analytics";
 import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions, ChartFile, ArtifactHubMatch, ChartSource } from "@/lib/types";
 import {
   ArrowLeft,
@@ -520,7 +521,14 @@ export function StepValuesEditor({
           {/* Generate CTA */}
           <div className="flex justify-end">
             <button
-              onClick={onNext}
+              onClick={() => {
+                trackEvent("generate_config_clicked", {
+                  cloud_provider: configOptions.cloudProvider,
+                  chart_source_type: configOptions.chartSource.type,
+                  infra_deps_count: configOptions.infraDeps.length,
+                });
+                onNext();
+              }}
               className="flex items-center gap-2 px-6 h-11 rounded-xl bg-primary text-primary-foreground text-base font-semibold hover:bg-primary/90 transition-colors shadow-sm"
             >
               Generate config

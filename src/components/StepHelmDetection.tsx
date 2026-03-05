@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { findHelmCharts } from "@/lib/github";
+import { trackEvent } from "@/lib/analytics";
 import type { GitHubRepo, HelmChart, WizardAction } from "@/lib/types";
 import { Loader2, AlertCircle, ArrowLeft, ArrowRight } from "lucide-react";
 
@@ -30,6 +31,10 @@ export function StepHelmDetection({ repo, subpath, dispatch, onNext, onBack }: S
   }, [repo, dispatch]);
 
   const handleSelect = (chart: HelmChart) => {
+    trackEvent("chart_selected", {
+      chart_name: chart.name,
+      dependency_count: chart.dependencies?.length ?? 0,
+    });
     dispatch({ type: "SELECT_CHART", chart });
     onNext();
   };
