@@ -225,10 +225,10 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   return (
     <div>
       <h1 className="text-2xl sm:text-3xl lg:text-4xl font-medium tracking-tight text-foreground text-center mb-3 sm:mb-4">
-        Generate a BYOC config from any Helm chart
+        Generate a Nuon config from any Helm chart
       </h1>
       <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
-        Let your customers run your software in their own cloud account.
+        Ship your Helm chart to customer clouds with <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> — no platform team required.
       </p>
 
       {/* Search bar */}
@@ -404,8 +404,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
           {([
             { idx: 0, title: "Find your chart", subtitle: "Search GitHub or paste a link — we scan for Chart.yaml and values.yaml", Icon: Search },
-            { idx: 1, title: "Configure for BYOC", subtitle: "We detect dependencies and wire up managed cloud infrastructure", Icon: Cloud },
-            { idx: 2, title: "Download & deploy", subtitle: "Get a complete set of config files, ready to push to GitHub", Icon: Download },
+            { idx: 1, title: "Configure for BYOC", subtitle: "Nuon detects dependencies and wires up managed cloud infrastructure", Icon: Cloud },
+            { idx: 2, title: "Download & deploy", subtitle: "Get a Nuon config package — push to GitHub, connect to Nuon, deploy", Icon: Download },
           ] as const).map(({ idx, title, subtitle, Icon }) => (
             <div key={idx} className={cn("bg-card rounded-xl border overflow-hidden transition-colors", expandedBlock === idx ? "border-primary/30" : "border-border")}>
               <button
@@ -462,7 +462,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
                         <p className="text-sm text-muted-foreground leading-relaxed mb-3">
                           Bundled Helm subcharts get replaced with managed cloud services that Nuon
                           provisions in each customer's account. You choose the cloud provider
-                          (AWS or Azure) and infrastructure mode.
+                          (AWS or Azure) and infrastructure mode. Nuon handles provisioning, credentials,
+                          and teardown automatically.
                         </p>
                         <div className="space-y-1.5 text-xs">
                           {[
@@ -482,8 +483,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
                     {idx === 2 && (
                       <>
                         <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                          You get a ZIP with everything Nuon needs — push it to GitHub, connect to Nuon,
-                          and create your first customer install.
+                          You get a ZIP with a complete Nuon config package — push it to GitHub, connect to Nuon,
+                          and ship to your first customer's cloud. Nuon handles continuous delivery from there.
                         </p>
                         <div className="bg-muted/40 rounded-lg px-4 py-3 font-mono text-xs leading-relaxed">
                           <div className="text-foreground font-medium mb-1">your-app/</div>
@@ -547,7 +548,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
                   <p className="text-sm text-muted-foreground leading-relaxed mb-3">
                     Bundled Helm subcharts get replaced with managed cloud services that Nuon
                     provisions in each customer's account. You choose the cloud provider
-                    (AWS or Azure) and infrastructure mode.
+                    (AWS or Azure) and infrastructure mode. Nuon handles provisioning, credentials,
+                    and teardown automatically.
                   </p>
                   <div className="space-y-1.5 text-xs">
                     {[
@@ -567,8 +569,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
               {expandedBlock === 2 && (
                 <>
                   <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                    You get a ZIP with everything Nuon needs — push it to GitHub, connect to Nuon,
-                    and create your first customer install.
+                    You get a ZIP with a complete Nuon config package — push it to GitHub, connect to Nuon,
+                    and ship to your first customer's cloud. Nuon handles continuous delivery from there.
                   </p>
                   <div className="bg-muted/40 rounded-lg px-4 py-3 font-mono text-xs leading-relaxed">
                     <div className="text-foreground font-medium mb-1">your-app/</div>
@@ -622,10 +624,42 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         </div>
       )}
 
+      {/* Nuon CTA */}
+      <div className="mt-14 sm:mt-20 max-w-xl lg:max-w-3xl mx-auto">
+        <div className="rounded-xl border border-primary/20 bg-primary/5 px-6 py-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-medium text-foreground mb-1">
+              New to Nuon?
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Nuon is the deployment platform for software vendors who want to ship to customer clouds — one pipeline, every environment, secure by default.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href="https://docs.nuon.co/quickstart"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              Quickstart
+            </a>
+            <a
+              href="https://nuon.co"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+            >
+              Learn more
+            </a>
+          </div>
+        </div>
+      </div>
+
       {/* Config counter */}
       {configCount > 0 && (
         <p className="text-center text-sm text-muted-foreground mt-8">
-          {configCount.toLocaleString()} BYOC config{configCount !== 1 ? "s" : ""} generated so far
+          {configCount.toLocaleString()} Nuon config{configCount !== 1 ? "s" : ""} generated so far
         </p>
       )}
     </div>

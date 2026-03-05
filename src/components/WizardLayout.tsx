@@ -109,22 +109,22 @@ export function WizardLayout({
       <header className={cn("px-4 sm:px-6 shrink-0", isFullscreen ? "py-2.5 border-b border-border" : "py-4 sm:py-5")}>
         <div className="max-w-[1800px] mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <button
-              onClick={onReset}
-              className="text-base font-medium tracking-tight text-foreground hover:text-primary transition-colors"
-            >
-              bring-your-helm
-            </button>
-            <span className="text-muted-foreground/50">·</span>
             <a
               href="https://nuon.co"
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-1.5 text-foreground hover:text-primary transition-colors"
             >
-              <NuonLogo className="w-3.5 h-3.5" />
-              <span className="text-sm">Powered by Nuon</span>
+              <NuonLogo className="w-4 h-4" />
+              <span className="text-base font-medium tracking-tight">Nuon</span>
             </a>
+            <span className="text-muted-foreground/50">·</span>
+            <button
+              onClick={onReset}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              bring-your-helm
+            </button>
             {isLanding && (
               <span className="hidden sm:inline text-sm text-muted-foreground ml-2">
                 — Turn a Helm chart into a deploy-anywhere config
