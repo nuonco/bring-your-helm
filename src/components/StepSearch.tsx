@@ -225,10 +225,10 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   return (
     <div>
       <h1 className="text-2xl sm:text-3xl lg:text-4xl font-medium tracking-tight text-foreground text-center mb-3 sm:mb-4">
-        Generate a Nuon config from any Helm chart
+        Turn any Helm chart into a BYOC app
       </h1>
       <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
-        Ship your Helm chart to customer clouds with <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> — no platform team required.
+        Set up your <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes. One&#x2011;click installs for your customers.
       </p>
 
       {/* Search bar */}
