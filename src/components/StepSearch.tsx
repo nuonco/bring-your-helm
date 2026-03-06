@@ -228,7 +228,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         Turn any Helm chart into a BYOC app
       </h1>
       <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
-        Set up your <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes.<br />One&#x2011;click installs for your customers.
+        Set up your <a href="https://nuon.co?utm_source=bring-your-helm&utm_medium=referral&utm_content=subtitle" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes.<br />One&#x2011;click installs for your customers.
       </p>
 
       {/* Search bar */}
@@ -637,7 +637,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <a
-              href="https://docs.nuon.co/get-started/quickstart"
+              href="https://docs.nuon.co/get-started/quickstart?utm_source=bring-your-helm&utm_medium=referral&utm_content=cta-quickstart"
               target="_blank"
               rel="noopener noreferrer"
               className="px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium text-foreground hover:bg-muted transition-colors"
@@ -645,7 +645,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
               Quickstart
             </a>
             <a
-              href="https://nuon.co"
+              href="https://nuon.co?utm_source=bring-your-helm&utm_medium=referral&utm_content=cta-learn-more"
               target="_blank"
               rel="noopener noreferrer"
               className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
