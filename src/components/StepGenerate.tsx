@@ -351,7 +351,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
             <span className="hidden sm:inline">Download ZIP</span>
           </button>
           <a
-            href="https://app.nuon.co"
+            href="https://app.nuon.co?utm_source=bring-your-helm&utm_medium=referral&utm_content=deploy-button"
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => trackEvent("deploy_with_nuon", { chart_name: chart.name })}
@@ -502,7 +502,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
               {/* Docs link */}
               <div className="pb-4 border-b border-border">
                 <a
-                  href="https://docs.nuon.co/configuration-files"
+                  href="https://docs.nuon.co/configuration-files?utm_source=bring-your-helm&utm_medium=referral&utm_content=variable-reference"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-sm text-primary hover:underline"
@@ -591,7 +591,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
 
                         <NextStep number={4} icon={Rocket} title="Connect to Nuon">
                           <p className="text-sm text-muted-foreground leading-relaxed mb-2.5">
-                            Install the <a href="https://docs.nuon.co/cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a>, then create your app:
+                            Install the <a href="https://docs.nuon.co/cli?utm_source=bring-your-helm&utm_medium=referral&utm_content=getting-started-cli" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Nuon CLI</a>, then create your app:
                           </p>
                           <CodeSnippet text={`nuon apps create -n ${appDirName}\nnuon apps sync`} />
                         </NextStep>
@@ -606,7 +606,7 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
 
                       <div className="mt-4 pt-3 border-t border-border">
                         <a
-                          href="https://docs.nuon.co/get-started/quickstart"
+                          href="https://docs.nuon.co/get-started/quickstart?utm_source=bring-your-helm&utm_medium=referral&utm_content=getting-started-quickstart"
                           target="_blank"
                           rel="noopener noreferrer"
                           className="flex items-center gap-2 text-sm text-primary hover:underline"
