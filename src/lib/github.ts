@@ -1,4 +1,4 @@
-import type { GitHubRepo, HelmChart, ChartDependency } from "./types";
+import type { GitHubRepo, HelmChart, ChartDependency, ChartFile } from "./types";
 import yaml from "js-yaml";
 
 const GITHUB_API = "https://api.github.com";
@@ -6,10 +6,20 @@ const GITHUB_API = "https://api.github.com";
 const cache = new Map<string, { data: any; ts: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
-async function ghFetch(url: string): Promise<Response> {
-  const res = await fetch(url, {
-    headers: { Accept: "application/vnd.github+json" },
-  });
+// Module-level token — set via setAuthToken() from the auth context
+let _authToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  _authToken = token;
+}
+
+async function ghFetch(url: string, token?: string): Promise<Response> {
+  const effectiveToken = token ?? _authToken;
+  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
+  if (effectiveToken) {
+    headers.Authorization = `Bearer ${effectiveToken}`;
+  }
+  const res = await fetch(url, { headers });
   if (res.status === 403 || res.status === 429) {
     throw new Error("GitHub API rate limit reached. Please wait a minute and try again.");
   }
@@ -20,19 +30,34 @@ async function ghFetch(url: string): Promise<Response> {
   return res;
 }
 
-async function ghFetchJson<T = any>(url: string): Promise<T> {
-  const cached = cache.get(url);
+async function ghFetchJson<T = any>(url: string, token?: string): Promise<T> {
+  const cacheKey = `${url}:${token ?? _authToken ?? "anon"}`;
+  const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL) {
     return cached.data as T;
   }
-  const res = await ghFetch(url);
+  const res = await ghFetch(url, token);
   const data = await res.json();
-  cache.set(url, { data, ts: Date.now() });
+  cache.set(cacheKey, { data, ts: Date.now() });
   return data as T;
 }
 
+const OWNER_REPO_RE = /^([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+?)(?:\/.*)?$/;
+
 export async function searchRepos(query: string): Promise<GitHubRepo[]> {
   if (!query.trim()) return [];
+
+  // If query looks like "org/repo" or "org/repo/subdir", try exact lookup first
+  const match = query.trim().match(OWNER_REPO_RE);
+  if (match) {
+    try {
+      const repo = await ghFetchJson<GitHubRepo>(`${GITHUB_API}/repos/${match[1]}/${match[2]}`);
+      return [repo];
+    } catch {
+      // Exact match failed — fall through to search
+    }
+  }
+
   const data = await ghFetchJson<{ items: GitHubRepo[] }>(
     `${GITHUB_API}/search/repositories?q=${encodeURIComponent(query)}&sort=stars&per_page=8`
   );
@@ -131,4 +156,94 @@ export async function findHelmCharts(owner: string, repo: string, subpath?: stri
 export async function getFileContent(owner: string, repo: string, path: string): Promise<string> {
   const data = await ghFetchJson<{ content: string }>(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`);
   return atob(data.content);
+}
+
+const CHART_FILE_EXTENSIONS = new Set([
+  ".yaml", ".yml", ".json", ".toml", ".tpl", ".txt", ".md", ".helmignore", ".lock",
+]);
+
+function hasAllowedExtension(filePath: string): boolean {
+  const lower = filePath.toLowerCase();
+  if (lower.endsWith(".helmignore") || lower.endsWith("chart.lock")) return true;
+  const dotIdx = lower.lastIndexOf(".");
+  if (dotIdx === -1) return false;
+  return CHART_FILE_EXTENSIONS.has(lower.slice(dotIdx));
+}
+
+async function listFilesRecursive(owner: string, repo: string, path: string): Promise<string[]> {
+  const data = await ghFetchJson<any>(`${GITHUB_API}/repos/${owner}/${repo}/contents/${path}`);
+  if (!Array.isArray(data)) return [data.path];
+  const files: string[] = [];
+  const subdirs: string[] = [];
+  for (const item of data) {
+    if (item.type === "file") {
+      files.push(item.path);
+    } else if (item.type === "dir") {
+      subdirs.push(item.path);
+    }
+  }
+  const subResults = await Promise.all(
+    subdirs.map((dir) => listFilesRecursive(owner, repo, dir))
+  );
+  for (const sub of subResults) {
+    files.push(...sub);
+  }
+  return files;
+}
+
+export async function fetchChartFiles(
+  owner: string,
+  repo: string,
+  chartPath: string,
+): Promise<ChartFile[]> {
+  const allPaths = await listFilesRecursive(owner, repo, chartPath);
+  const prefix = chartPath.endsWith("/") ? chartPath : chartPath + "/";
+  const filteredPaths = allPaths.filter((p) => {
+    const rel = p.startsWith(prefix) ? p.slice(prefix.length) : p;
+    if (rel === "values.yaml") return false;
+    return hasAllowedExtension(p);
+  });
+
+  const results: ChartFile[] = [];
+  const CONCURRENCY = 5;
+  for (let i = 0; i < filteredPaths.length; i += CONCURRENCY) {
+    const batch = filteredPaths.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map(async (filePath) => {
+        const content = await getFileContent(owner, repo, filePath);
+        const relativePath = filePath.startsWith(prefix) ? filePath.slice(prefix.length) : filePath;
+        return { relativePath, content };
+      })
+    );
+    for (const result of settled) {
+      if (result.status === "fulfilled") {
+        results.push(result.value);
+      }
+    }
+  }
+  return results;
+}
+
+export async function getUserRepos(token: string): Promise<GitHubRepo[]> {
+  return ghFetchJson<GitHubRepo[]>(
+    `${GITHUB_API}/user/repos?sort=updated&per_page=20&type=owner`,
+    token,
+  );
+}
+
+/**
+ * Check if a repo likely contains a Helm chart by searching for Chart.yaml.
+ * Uses the GitHub code search API with a per-repo scope.
+ * Returns true if Chart.yaml is found, false otherwise.
+ */
+export async function repoHasHelmChart(owner: string, repo: string, token: string): Promise<boolean> {
+  try {
+    const data = await ghFetchJson<{ total_count: number }>(
+      `${GITHUB_API}/search/code?q=filename:Chart.yaml+repo:${owner}/${repo}&per_page=1`,
+      token,
+    );
+    return data.total_count > 0;
+  } catch {
+    return false;
+  }
 }

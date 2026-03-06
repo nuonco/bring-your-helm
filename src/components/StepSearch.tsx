@@ -1,7 +1,18 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { ArrowRight, Loader2, Star, Search, Plus, Package } from "lucide-react";
-import { searchRepos, parseRepoUrl, getRepoByFullName } from "@/lib/github";
+import { ArrowRight, Loader2, Star, Search, Plus, Package, ChevronDown, Cloud, Download, FileText, User } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { searchRepos, parseRepoUrl, getRepoByFullName, getUserRepos, repoHasHelmChart } from "@/lib/github";
+import { useAuth } from "@/hooks/use-auth";
+import { trackEvent } from "@/lib/analytics";
 import type { GitHubRepo, WizardAction } from "@/lib/types";
+
+function GitHubIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+    </svg>
+  );
+}
 
 interface CommunityConfig {
   full_name: string;
@@ -94,6 +105,7 @@ interface StepSearchProps {
 }
 
 export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProps) {
+  const { token, isAuthenticated, isConfigured, signIn } = useAuth();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GitHubRepo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -102,6 +114,29 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [expandedBlock, setExpandedBlock] = useState<number | null>(null);
+  const toggleBlock = (index: number) => setExpandedBlock(prev => prev === index ? null : index);
+  const [userRepos, setUserRepos] = useState<GitHubRepo[]>([]);
+  const [userReposLoading, setUserReposLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isAuthenticated || !token) return;
+    setUserReposLoading(true);
+    getUserRepos(token)
+      .then(async (repos) => {
+        // Check each repo for Chart.yaml in parallel
+        const checks = await Promise.all(
+          repos.map(async (repo) => {
+            const [owner, name] = repo.full_name.split("/");
+            const hasChart = await repoHasHelmChart(owner, name, token);
+            return { repo, hasChart };
+          })
+        );
+        setUserRepos(checks.filter((c) => c.hasChart).map((c) => c.repo));
+      })
+      .catch(() => setUserRepos([]))
+      .finally(() => setUserReposLoading(false));
+  }, [isAuthenticated, token]);
 
   const communityConfigs = useMemo<CommunityConfig[]>(() => {
     try {
@@ -119,7 +154,8 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const selectRepo = (repo: GitHubRepo, subpath?: string) => {
+  const selectRepo = (repo: GitHubRepo, subpath?: string, source?: string) => {
+    trackEvent("repo_selected", { repo_name: repo.full_name, source: source || "search" });
     dispatch({ type: "SET_REPO", repo, subpath });
     setShowResults(false);
     onNext();
@@ -171,7 +207,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   };
 
   const handleSuggestion = (repo: GitHubRepo) => {
-    selectRepo(repo);
+    selectRepo(repo, undefined, "featured");
   };
 
   const handleSubmit = async () => {
@@ -188,12 +224,15 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
 
   return (
     <div>
-      <h1 className="text-2xl sm:text-3xl lg:text-4xl font-medium tracking-tight text-foreground text-center mb-6 sm:mb-8">
-        Which chart would you like to deploy?
+      <h1 className="text-2xl sm:text-3xl lg:text-4xl font-medium tracking-tight text-foreground text-center mb-3 sm:mb-4">
+        Turn any Helm chart into a BYOC app
       </h1>
+      <p className="text-base text-muted-foreground text-center max-w-lg mx-auto mb-8 sm:mb-10 leading-relaxed">
+        Set up your <a href="https://nuon.co" target="_blank" rel="noopener noreferrer" className="text-foreground font-medium hover:text-primary transition-colors">Nuon</a> BYOC app in minutes.<br />One&#x2011;click installs for your customers.
+      </p>
 
       {/* Search bar */}
-      <div ref={containerRef} className="relative max-w-xl mx-auto mb-6 sm:mb-10">
+      <div ref={containerRef} className="relative max-w-xl mx-auto mb-8 sm:mb-12">
         <div className="relative flex items-center bg-card rounded-xl border border-border hover:border-muted-foreground/30 transition-colors">
           <Search className="w-4 h-4 text-muted-foreground ml-4 shrink-0" />
           <input
@@ -242,6 +281,59 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         )}
       </div>
 
+      {/* Your Repositories */}
+      {isAuthenticated && userRepos.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <User className="w-3.5 h-3.5 text-muted-foreground" />
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Your Repositories</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">
+            {userRepos.slice(0, 6).map((repo) => (
+              <button
+                key={repo.id}
+                onClick={() => selectRepo(repo, undefined, "user_repo")}
+                className="text-left px-5 py-4 bg-card hover:bg-muted/30 transition-all group flex items-start gap-3"
+              >
+                <img src={repo.owner.avatar_url} alt="" className="w-5 h-5 rounded-full mt-0.5 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-base font-medium text-foreground group-hover:text-primary transition-colors truncate">
+                    {repo.full_name}
+                  </div>
+                  {repo.description && (
+                    <div className="text-sm text-muted-foreground mt-0.5 line-clamp-1">{repo.description}</div>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {isAuthenticated && userReposLoading && (
+        <div className="flex items-center gap-2 mb-8 text-sm text-muted-foreground justify-center">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading your repositories...
+        </div>
+      )}
+      {!isAuthenticated && isConfigured && (
+        <div className="mb-8">
+          <button
+            onClick={() => { trackEvent("sign_in_clicked", { source: "landing" }); signIn(); }}
+            className="w-full flex items-center gap-3 px-5 py-4 bg-card rounded-lg border border-border hover:border-muted-foreground/30 hover:bg-muted/30 transition-all group"
+          >
+            <GitHubIcon className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
+            <div className="text-left">
+              <span className="text-sm font-medium text-foreground">Sign in with GitHub</span>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Access your private repositories and Helm charts
+              </p>
+            </div>
+            <ArrowRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-foreground ml-auto shrink-0 transition-colors" />
+          </button>
+        </div>
+      )}
+
       {/* Card grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border rounded-lg overflow-hidden">
         {[
@@ -259,7 +351,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
                   <Plus className="w-4 h-4 text-primary mb-1.5" />
                   <div className="text-base font-medium text-foreground">Connect your repo</div>
                   <div className="text-sm text-muted-foreground mt-1 leading-relaxed">
-                    Paste a public or private GitHub repo to generate your BYOC config
+                    Paste a GitHub repo URL or search above to find your chart
                   </div>
                 </div>
                 <div className="flex items-center justify-end">
@@ -300,9 +392,210 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         })}
       </div>
 
+      {/* How it works — below the grid */}
+      <div className="max-w-xl lg:max-w-3xl mx-auto mt-14 sm:mt-20">
+        <div className="flex items-center gap-2 mb-4">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            How it works
+          </div>
+          <div className="flex-1 h-px bg-border" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
+          {([
+            { idx: 0, title: "Find your chart", subtitle: "Search GitHub or paste a link — we scan for Chart.yaml and values.yaml", Icon: Search },
+            { idx: 1, title: "Configure for BYOC", subtitle: "Nuon detects dependencies and wires up managed cloud infrastructure", Icon: Cloud },
+            { idx: 2, title: "Download & deploy", subtitle: "Get a Nuon config package — push to GitHub, connect to Nuon, deploy", Icon: Download },
+          ] as const).map(({ idx, title, subtitle, Icon }) => (
+            <div key={idx} className={cn("bg-card rounded-xl border overflow-hidden transition-colors", expandedBlock === idx ? "border-primary/30" : "border-border")}>
+              <button
+                onClick={() => toggleBlock(idx)}
+                className="w-full flex items-center gap-3 px-4 py-3.5 text-left"
+              >
+                <div className="w-7 h-7 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-bold flex items-center justify-center shrink-0">
+                  {idx + 1}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-foreground">{title}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">{subtitle}</div>
+                </div>
+                <Icon className="w-4 h-4 text-muted-foreground shrink-0 mr-1 hidden sm:block" />
+                <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0", expandedBlock === idx && "rotate-180")} />
+              </button>
+
+              {/* Mobile inline expansion */}
+              <div className={cn("lg:hidden grid transition-all duration-200 ease-out", expandedBlock === idx ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+                <div className="overflow-hidden">
+                  <div className="px-4 pb-4 pt-1 border-t border-border">
+                    {idx === 0 && (
+                      <>
+                        <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                          Paste a GitHub URL or search by name. We scan the repo for Helm charts,
+                          read Chart.yaml for dependencies, and parse values.yaml to detect passwords,
+                          ingress, and infrastructure subcharts.
+                        </p>
+                        <div className="flex items-center gap-2 text-xs overflow-x-auto pb-1">
+                          <div className="flex items-center gap-1.5 bg-muted/60 rounded-lg px-3 py-2 shrink-0">
+                            <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                            <span className="font-mono text-foreground">your-org/your-app</span>
+                          </div>
+                          <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                          <div className="flex flex-col gap-1 shrink-0">
+                            <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                              <FileText className="w-3 h-3 text-primary/60" />
+                              <span className="font-mono text-muted-foreground">Chart.yaml</span>
+                            </div>
+                            <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                              <FileText className="w-3 h-3 text-primary/60" />
+                              <span className="font-mono text-muted-foreground">values.yaml</span>
+                            </div>
+                          </div>
+                          <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                          <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-2 shrink-0">
+                            <span className="text-primary font-medium">Dependencies detected</span>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {idx === 1 && (
+                      <>
+                        <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                          Bundled Helm subcharts get replaced with managed cloud services that Nuon
+                          provisions in each customer's account. You choose the cloud provider
+                          (AWS or Azure) and infrastructure mode. Nuon handles provisioning, credentials,
+                          and teardown automatically.
+                        </p>
+                        <div className="space-y-1.5 text-xs">
+                          {[
+                            { from: "postgresql", to: "Amazon RDS" },
+                            { from: "redis / valkey", to: "ElastiCache" },
+                            { from: "minio", to: "S3 Bucket" },
+                          ].map((row) => (
+                            <div key={row.from} className="flex items-center gap-2">
+                              <div className="bg-muted/60 rounded-lg px-3 py-1.5 font-mono text-muted-foreground w-28 shrink-0 truncate">{row.from}</div>
+                              <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                              <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-1.5 font-medium text-primary flex-1">{row.to}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {idx === 2 && (
+                      <>
+                        <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                          You get a ZIP with a complete Nuon config package — push it to GitHub, connect to Nuon,
+                          and ship to your first customer's cloud. Nuon handles continuous delivery from there.
+                        </p>
+                        <div className="bg-muted/40 rounded-lg px-4 py-3 font-mono text-xs leading-relaxed">
+                          <div className="text-foreground font-medium mb-1">your-app/</div>
+                          <div className="text-muted-foreground pl-4 space-y-0.5">
+                            <div><span className="text-foreground">metadata.toml</span> <span className="text-muted-foreground/60 ml-2">— app identity</span></div>
+                            <div><span className="text-foreground">sandbox.toml</span> <span className="text-muted-foreground/60 ml-2">— environment config</span></div>
+                            <div><span className="text-foreground">inputs.toml</span> <span className="text-muted-foreground/60 ml-2">— customer settings</span></div>
+                            <div className="text-foreground font-medium mt-1">components/</div>
+                            <div className="pl-4 space-y-0.5">
+                              <div><span className="text-muted-foreground">1-rds.toml</span> <span className="text-muted-foreground/60 ml-2">— managed database</span></div>
+                              <div><span className="text-muted-foreground">2-your-app.toml</span> <span className="text-muted-foreground/60 ml-2">— Helm release</span></div>
+                              <div><span className="text-muted-foreground">values/values.yaml</span> <span className="text-muted-foreground/60 ml-2">— templated values</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Desktop expansion panel */}
+        <div className={cn("hidden lg:grid transition-all duration-200 ease-out mt-2", expandedBlock !== null ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+          <div className="overflow-hidden">
+            <div className="bg-card rounded-xl border border-border px-5 pb-4 pt-3">
+              {expandedBlock === 0 && (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    Paste a GitHub URL or search by name. We scan the repo for Helm charts,
+                    read Chart.yaml for dependencies, and parse values.yaml to detect passwords,
+                    ingress, and infrastructure subcharts.
+                  </p>
+                  <div className="flex items-center gap-2 text-xs overflow-x-auto pb-1">
+                    <div className="flex items-center gap-1.5 bg-muted/60 rounded-lg px-3 py-2 shrink-0">
+                      <Package className="w-3.5 h-3.5 text-muted-foreground" />
+                      <span className="font-mono text-foreground">your-org/your-app</span>
+                    </div>
+                    <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                        <FileText className="w-3 h-3 text-primary/60" />
+                        <span className="font-mono text-muted-foreground">Chart.yaml</span>
+                      </div>
+                      <div className="bg-muted/60 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                        <FileText className="w-3 h-3 text-primary/60" />
+                        <span className="font-mono text-muted-foreground">values.yaml</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                    <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-2 shrink-0">
+                      <span className="text-primary font-medium">Dependencies detected</span>
+                    </div>
+                  </div>
+                </>
+              )}
+              {expandedBlock === 1 && (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    Bundled Helm subcharts get replaced with managed cloud services that Nuon
+                    provisions in each customer's account. You choose the cloud provider
+                    (AWS or Azure) and infrastructure mode. Nuon handles provisioning, credentials,
+                    and teardown automatically.
+                  </p>
+                  <div className="space-y-1.5 text-xs">
+                    {[
+                      { from: "postgresql", to: "Amazon RDS" },
+                      { from: "redis / valkey", to: "ElastiCache" },
+                      { from: "minio", to: "S3 Bucket" },
+                    ].map((row) => (
+                      <div key={row.from} className="flex items-center gap-2">
+                        <div className="bg-muted/60 rounded-lg px-3 py-1.5 font-mono text-muted-foreground w-28 shrink-0 truncate">{row.from}</div>
+                        <ArrowRight className="w-3 h-3 text-muted-foreground shrink-0" />
+                        <div className="bg-primary/10 border border-primary/20 rounded-lg px-3 py-1.5 font-medium text-primary flex-1">{row.to}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+              {expandedBlock === 2 && (
+                <>
+                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                    You get a ZIP with a complete Nuon config package — push it to GitHub, connect to Nuon,
+                    and ship to your first customer's cloud. Nuon handles continuous delivery from there.
+                  </p>
+                  <div className="bg-muted/40 rounded-lg px-4 py-3 font-mono text-xs leading-relaxed">
+                    <div className="text-foreground font-medium mb-1">your-app/</div>
+                    <div className="text-muted-foreground pl-4 space-y-0.5">
+                      <div><span className="text-foreground">metadata.toml</span> <span className="text-muted-foreground/60 ml-2">— app identity</span></div>
+                      <div><span className="text-foreground">sandbox.toml</span> <span className="text-muted-foreground/60 ml-2">— environment config</span></div>
+                      <div><span className="text-foreground">inputs.toml</span> <span className="text-muted-foreground/60 ml-2">— customer settings</span></div>
+                      <div className="text-foreground font-medium mt-1">components/</div>
+                      <div className="pl-4 space-y-0.5">
+                        <div><span className="text-muted-foreground">1-rds.toml</span> <span className="text-muted-foreground/60 ml-2">— managed database</span></div>
+                        <div><span className="text-muted-foreground">2-your-app.toml</span> <span className="text-muted-foreground/60 ml-2">— Helm release</span></div>
+                        <div><span className="text-muted-foreground">values/values.yaml</span> <span className="text-muted-foreground/60 ml-2">— templated values</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Community configs */}
       {communityConfigs.length > 0 && (
-        <div className="mt-10">
+        <div className="mt-14 sm:mt-20">
           <div className="flex items-center gap-2 mb-4">
             <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Recently generated
@@ -313,7 +606,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
             {communityConfigs.map((config) => (
               <button
                 key={`${config.full_name}-${config.chart_name}`}
-                onClick={() => resolveAndGo(config.html_url)}
+                onClick={() => { trackEvent("repo_selected", { repo_name: config.full_name, source: "recent" }); resolveAndGo(config.html_url); }}
                 className="text-left px-5 py-4 bg-card hover:bg-muted/30 transition-all group flex items-start gap-3"
               >
                 <Package className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
@@ -331,10 +624,42 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
         </div>
       )}
 
+      {/* Nuon CTA */}
+      <div className="mt-14 sm:mt-20 max-w-xl lg:max-w-3xl mx-auto">
+        <div className="rounded-xl border border-primary/20 bg-primary/5 px-6 py-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="text-base font-medium text-foreground mb-1">
+              New to Nuon?
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Nuon is the deployment platform for software vendors who want to ship to customer clouds — one pipeline, every environment, secure by default.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href="https://docs.nuon.co/get-started/quickstart"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 rounded-lg border border-border bg-card text-sm font-medium text-foreground hover:bg-muted transition-colors"
+            >
+              Quickstart
+            </a>
+            <a
+              href="https://nuon.co"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
+            >
+              Learn more
+            </a>
+          </div>
+        </div>
+      </div>
+
       {/* Config counter */}
       {configCount > 0 && (
         <p className="text-center text-sm text-muted-foreground mt-8">
-          {configCount} config{configCount !== 1 ? "s" : ""} generated by humans
+          {configCount.toLocaleString()} Nuon config{configCount !== 1 ? "s" : ""} generated so far
         </p>
       )}
     </div>

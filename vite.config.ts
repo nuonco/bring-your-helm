@@ -9,6 +9,12 @@ export default defineConfig({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      "/api": {
+        target: "http://localhost:10000",
+        changeOrigin: true,
+      },
+    },
   },
   plugins: [react()],
   resolve: {

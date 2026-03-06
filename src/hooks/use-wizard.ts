@@ -1,6 +1,7 @@
-import { useReducer, useCallback, useEffect } from "react";
+import { useReducer, useCallback, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { WizardState, WizardAction, ConfigOptions } from "@/lib/types";
+import { trackPageView } from "@/lib/analytics";
 
 const STEP_PATHS = ["/", "/select-chart", "/configure", "/generate"] as const;
 
@@ -15,6 +16,7 @@ const defaultConfigOptions: ConfigOptions = {
   namespace: "",
   configRepo: "",
   infraDeps: [],
+  chartSource: { type: "upstream_repo" },
 };
 
 const initialState: WizardState = {
@@ -25,6 +27,9 @@ const initialState: WizardState = {
   valuesYaml: "",
   editedValuesYaml: "",
   configOptions: defaultConfigOptions,
+  chartFiles: [],
+  helmRepoMatches: [],
+  helmRepoLoading: false,
 };
 
 function reducer(state: WizardState, action: WizardAction): WizardState {
@@ -43,6 +48,12 @@ function reducer(state: WizardState, action: WizardAction): WizardState {
       return { ...state, editedValuesYaml: action.yaml };
     case "SET_CONFIG_OPTIONS":
       return { ...state, configOptions: { ...state.configOptions, ...action.options } };
+    case "SET_CHART_FILES":
+      return { ...state, chartFiles: action.files };
+    case "SET_HELM_REPO_MATCHES":
+      return { ...state, helmRepoMatches: action.matches };
+    case "SET_HELM_REPO_LOADING":
+      return { ...state, helmRepoLoading: action.loading };
     case "RESET":
       return initialState;
     default:
@@ -58,10 +69,16 @@ export function useWizard() {
     step: stepFromPath(location.pathname),
   });
 
+  const prevStepRef = useRef(state.step);
   useEffect(() => {
     const targetPath = STEP_PATHS[state.step] || "/";
     if (location.pathname !== targetPath) {
       navigate(targetPath, { replace: true });
+    }
+    if (state.step !== prevStepRef.current) {
+      const titles = ["Search", "Select Chart", "Configure", "Generate"];
+      trackPageView(targetPath, titles[state.step]);
+      prevStepRef.current = state.step;
     }
   }, [state.step, navigate, location.pathname]);
 

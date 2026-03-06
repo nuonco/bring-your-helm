@@ -1,27 +1,25 @@
-import { useEffect, useState, useRef, useMemo } from "react";
-import Editor, { type OnMount } from "@monaco-editor/react";
-import { getFileContent } from "@/lib/github";
-import { NUON_VARIABLES, detectInfraDeps } from "@/lib/nuon";
-import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions } from "@/lib/types";
-import { useTheme } from "@/hooks/use-theme";
+import { useEffect, useState, useMemo } from "react";
+import { getFileContent, fetchChartFiles } from "@/lib/github";
+import { detectInfraDeps } from "@/lib/nuon";
+import { searchArtifactHub, pickBestMatch } from "@/lib/artifacthub";
+import { trackEvent } from "@/lib/analytics";
+import type { GitHubRepo, HelmChart, WizardAction, ConfigOptions, ChartFile, ArtifactHubMatch, ChartSource } from "@/lib/types";
 import {
   ArrowLeft,
   ArrowRight,
   Loader2,
-  Copy,
-  Check,
+  Info,
+  FileText,
+  Folder,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
-  Code2,
-  EyeOff,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
-  ResizableHandle,
-} from "@/components/ui/resizable";
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 
 const INFRA_DEP_OPTIONS = [
   { id: "postgresql", label: "PostgreSQL (RDS)" },
@@ -35,6 +33,9 @@ interface StepValuesEditorProps {
   chart: HelmChart;
   valuesYaml: string;
   configOptions: ConfigOptions;
+  chartFiles: ChartFile[];
+  helmRepoMatches: ArtifactHubMatch[];
+  helmRepoLoading: boolean;
   dispatch: React.Dispatch<WizardAction>;
   onNext: () => void;
   onBack: () => void;
@@ -45,29 +46,50 @@ export function StepValuesEditor({
   chart,
   valuesYaml,
   configOptions,
+  chartFiles,
+  helmRepoMatches,
+  helmRepoLoading,
   dispatch,
   onNext,
   onBack,
 }: StepValuesEditorProps) {
-  const { theme } = useTheme();
   const [loading, setLoading] = useState(!valuesYaml);
-  const [copiedVar, setCopiedVar] = useState<string | null>(null);
-  const [inputName, setInputName] = useState("");
-  const [hasSelection, setHasSelection] = useState(false);
-  const [selectedText, setSelectedText] = useState("");
-  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number } | null>(null);
-  const [mobileSection, setMobileSection] = useState<"variables" | "configure" | null>(null);
-  const [showEditor, setShowEditor] = useState(true);
-  const [showVariables, setShowVariables] = useState(true);
-  const [editorCanScroll, setEditorCanScroll] = useState(false);
-  const editorRef = useRef<any>(null);
-  const editorContainerRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [chartFilesLoading, setChartFilesLoading] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const isMonorepo = useMemo(() => {
+    const p = chart.path || ".";
+    return p !== "." && p.includes("/");
+  }, [chart.path]);
 
   const autoDetectedDeps = useMemo(
     () => detectInfraDeps(chart.dependencies || []),
     [chart.dependencies]
   );
+
+  // Auto-detect ArtifactHub match on mount
+  useEffect(() => {
+    if (helmRepoMatches.length > 0) return; // already searched
+    dispatch({ type: "SET_HELM_REPO_LOADING", loading: true });
+    searchArtifactHub(chart.name)
+      .then((matches) => {
+        dispatch({ type: "SET_HELM_REPO_MATCHES", matches });
+        const best = pickBestMatch(matches, chart.name, repo.owner.login);
+        if (best) {
+          dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: { type: "helm_repo", match: best } } });
+        } else if (isMonorepo) {
+          // No ArtifactHub match + monorepo → bundle by default
+          handleEnableBundle();
+        }
+      })
+      .catch(() => {
+        // ArtifactHub search failed — fall back
+        if (isMonorepo) handleEnableBundle();
+      })
+      .finally(() => {
+        dispatch({ type: "SET_HELM_REPO_LOADING", loading: false });
+      });
+  }, [chart.name]);
 
   useEffect(() => {
     if (autoDetectedDeps.length > 0 && configOptions.infraDeps.length === 0) {
@@ -75,68 +97,26 @@ export function StepValuesEditor({
     }
   }, [autoDetectedDeps, configOptions.infraDeps.length, dispatch]);
 
-  const handleEditorMount: OnMount = (editor) => {
-    editorRef.current = editor;
-    const checkScroll = () => {
-      const scrollTop = editor.getScrollTop();
-      const scrollHeight = editor.getScrollHeight();
-      const clientHeight = editor.getLayoutInfo().height;
-      setEditorCanScroll(scrollHeight - scrollTop - clientHeight > 20);
-    };
-    editor.onDidScrollChange(checkScroll);
-    editor.onDidChangeModelContent(checkScroll);
-    setTimeout(checkScroll, 500);
-    editor.onDidChangeCursorSelection(() => {
-      const selection = editor.getSelection();
-      const model = editor.getModel();
-      if (selection && !selection.isEmpty() && model) {
-        setHasSelection(true);
-        setSelectedText(model.getValueInRange(selection));
-        const endPos = selection.getEndPosition();
-        const coords = editor.getScrolledVisiblePosition(endPos);
-        if (coords && editorContainerRef.current) {
-          setPopoverPos({ top: coords.top + coords.height + 4, left: coords.left });
-        }
-      } else {
-        setHasSelection(false);
-        setSelectedText("");
-        setPopoverPos(null);
-      }
-    });
-  };
-
-  const confirmMakeInput = () => {
-    const editor = editorRef.current;
-    if (!editor || !inputName.trim()) return;
-    const selection = editor.getSelection();
-    if (!selection) return;
-    const template = `{{.nuon.install.inputs.${inputName.trim()}}}`;
-    editor.executeEdits("make-input", [{ range: selection, text: template }]);
-    dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
-    setInputName("");
-    editor.focus();
-  };
-
-  const insertAtCursor = (text: string) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const selection = editor.getSelection();
-    if (selection) {
-      editor.executeEdits("insert-variable", [
-        { range: selection, text, forceMoveMarkers: true },
-      ]);
+  const handleEnableBundle = async () => {
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: { type: "bundle" } } });
+    if (chartFiles.length > 0) return;
+    setChartFilesLoading(true);
+    try {
+      const [owner, name] = repo.full_name.split("/");
+      const files = await fetchChartFiles(owner, name, chart.path);
+      dispatch({ type: "SET_CHART_FILES", files });
+    } catch (err) {
+      console.error("Failed to fetch chart files:", err);
+    } finally {
+      setChartFilesLoading(false);
     }
-    dispatch({ type: "SET_EDITED_VALUES", yaml: editor.getValue() });
-    editor.focus();
-    setCopiedVar(text);
-    setTimeout(() => setCopiedVar(null), 1200);
   };
 
-  const copyToClipboard = (text: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    navigator.clipboard.writeText(text);
-    setCopiedVar(text);
-    setTimeout(() => setCopiedVar(null), 1200);
+  const setChartSource = (source: ChartSource) => {
+    dispatch({ type: "SET_CONFIG_OPTIONS", options: { chartSource: source } });
+    if (source.type === "bundle" && chartFiles.length === 0) {
+      handleEnableBundle();
+    }
   };
 
   const toggleInfraDep = (depId: string) => {
@@ -161,13 +141,34 @@ export function StepValuesEditor({
       .finally(() => setLoading(false));
   }, [repo, chart, valuesYaml, dispatch]);
 
-  useEffect(() => {
-    if (hasSelection && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [hasSelection]);
+  const depCount = configOptions.infraDeps.length;
+  const toolbarSubtitle = depCount > 0
+    ? `${depCount} infrastructure dependenc${depCount === 1 ? "y" : "ies"} detected from this chart — review and adjust below`
+    : "Choose your cloud provider and infrastructure, then hit Generate";
 
-  const categories = [...new Set(NUON_VARIABLES.map((v) => v.category))];
+  const summaryItems = useMemo(() => {
+    const items: { label: string; desc: string }[] = [
+      { label: "metadata.toml, sandbox.toml, runner.toml", desc: "App identity, sandbox environment, and runner config" },
+      { label: "inputs.toml", desc: "Customer-facing settings (subdomain, passwords, etc.)" },
+    ];
+    const hasDb = configOptions.infraDeps.some((d) => ["postgresql", "mysql", "mariadb"].includes(d));
+    const hasCache = configOptions.infraDeps.some((d) => ["redis", "memcached"].includes(d));
+    const hasS3 = configOptions.infraDeps.some((d) => ["minio", "s3"].includes(d));
+    let n = 1;
+    if (hasDb) { items.push({ label: `${n}-rds.toml + Terraform`, desc: "Provisions a managed database in the customer's cloud" }); n++; }
+    if (hasCache) { items.push({ label: `${n}-elasticache.toml + Terraform`, desc: "Provisions a managed cache in the customer's cloud" }); n++; }
+    if (hasS3) { items.push({ label: `${n}-s3.toml + Terraform`, desc: "Provisions object storage in the customer's cloud" }); n++; }
+    items.push({ label: `${n}-${chart.name}.toml`, desc: "Helm release — deploys your app" });
+    items.push({ label: "values.yaml", desc: "Helm values with Nuon template variables wired in" });
+    if (hasDb) items.push({ label: "db-credentials action", desc: "Copies database secrets into Kubernetes after provisioning" });
+    return items;
+  }, [configOptions.infraDeps, chart.name]);
+
+  // Find the best ArtifactHub match for display
+  const bestMatch = useMemo(
+    () => pickBestMatch(helmRepoMatches, chart.name, repo.owner.login),
+    [helmRepoMatches, chart.name, repo.owner.login]
+  );
 
   if (loading) {
     return (
@@ -180,209 +181,12 @@ export function StepValuesEditor({
     );
   }
 
-  const variablesContent = (
-    <div className="p-3 space-y-5">
-      {categories.map((cat) => (
-        <div key={cat}>
-          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2 px-1">
-            {cat}
-          </div>
-          <div className="space-y-1.5">
-            {NUON_VARIABLES.filter((v) => v.category === cat).map((v) => (
-              <div
-                key={v.template}
-                className={cn(
-                  "group rounded-lg border px-3 py-2.5 transition-all cursor-pointer",
-                  copiedVar === v.template
-                    ? "border-primary/40 bg-primary/5"
-                    : "border-transparent hover:border-border hover:bg-muted/40"
-                )}
-                onClick={(e) => copyToClipboard(v.template, e as any)}
-              >
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-sm font-medium text-foreground">
-                    {v.name}
-                  </span>
-                  <div className="flex items-center gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); insertAtCursor(v.template); }}
-                      className="text-xs text-muted-foreground hover:text-primary transition-colors px-1"
-                      title="Insert at cursor"
-                    >
-                      Insert
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); copyToClipboard(v.template, e); }}
-                      className="text-muted-foreground hover:text-foreground transition-colors"
-                      title="Copy to clipboard"
-                    >
-                      {copiedVar === v.template ? (
-                        <Check className="w-3.5 h-3.5 text-primary" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-                <div
-                  className="font-mono text-xs text-muted-foreground bg-muted/60 rounded-md px-2.5 py-2 select-all break-all leading-relaxed transition-colors group-hover:bg-muted"
-                  title="Click to copy"
-                >
-                  {v.template}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  const configureContent = (
-    <div className="p-4 space-y-5">
-      {/* Cloud Provider */}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Cloud Provider
-        </div>
-        <div className="space-y-0.5">
-          {([["aws", "AWS (EKS)"], ["azure", "Azure (AKS)"]] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
-              <input
-                type="radio"
-                name="cloudProvider"
-                checked={configOptions.cloudProvider === value}
-                onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { cloudProvider: value } })}
-                className="accent-primary"
-              />
-              <span className="text-sm text-foreground">{label}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* Infrastructure Mode */}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Infrastructure Mode
-        </div>
-        <div className="space-y-0.5">
-          {([["default", "Default"], ["bring-vpc", "Bring own VPC"], ["bring-cluster", "Bring own cluster"]] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
-              <input
-                type="radio"
-                name="infraMode"
-                checked={configOptions.infraMode === value}
-                onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraMode: value } })}
-                className="accent-primary"
-              />
-              <span className="text-sm text-foreground">{label}</span>
-            </label>
-          ))}
-        </div>
-      </div>
-
-      {/* Infrastructure Dependencies */}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
-          Infrastructure Dependencies
-        </div>
-        {autoDetectedDeps.length > 0 && (
-          <p className="text-xs text-primary mb-2">
-            {autoDetectedDeps.length} detected from Chart.yaml
-          </p>
-        )}
-        <div className="space-y-1.5">
-          {INFRA_DEP_OPTIONS.map((dep) => {
-            const checked = configOptions.infraDeps.includes(dep.id);
-            const isAutoDetected = autoDetectedDeps.includes(dep.id);
-            return (
-              <label key={dep.id} className="flex items-center gap-2.5 px-1 py-1.5 rounded cursor-pointer hover:bg-muted/40 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleInfraDep(dep.id)}
-                  className="accent-primary"
-                />
-                <span className="text-sm text-foreground">{dep.label}</span>
-                {isAutoDetected && (
-                  <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-auto">auto</span>
-                )}
-              </label>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Namespace */}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Namespace
-        </div>
-        <input
-          type="text"
-          value={configOptions.namespace}
-          onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { namespace: e.target.value } })}
-          placeholder={chart.name}
-          className="w-full h-9 px-3 text-sm bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
-        />
-      </div>
-
-      {/* Config Repository */}
-      <div>
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
-          Config Repository
-        </div>
-        <p className="text-xs text-muted-foreground mb-2">
-          The GitHub repo where you'll push this config.
-        </p>
-        <input
-          type="text"
-          value={configOptions.configRepo}
-          onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { configRepo: e.target.value } })}
-          placeholder="your-org/your-repo"
-          className="w-full h-9 px-3 text-sm font-mono bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
-        />
-      </div>
-    </div>
-  );
-
-  const mobileEditorPanel = (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 min-h-0">
-        <Editor
-          defaultLanguage="yaml"
-          value={valuesYaml}
-          onChange={(value) =>
-            dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
-          }
-          theme={theme === "dark" ? "vs-dark" : "vs"}
-          onMount={handleEditorMount}
-          options={{
-            minimap: { enabled: false },
-            fontSize: 14,
-            fontFamily: "'Hack', monospace",
-            lineNumbers: "on",
-            scrollBeyondLastLine: false,
-            padding: { top: 12 },
-            wordWrap: "on",
-            renderLineHighlight: "none",
-            overviewRulerLanes: 0,
-            hideCursorInOverviewRuler: true,
-            scrollbar: {
-              verticalScrollbarSize: 6,
-              horizontalScrollbarSize: 6,
-            },
-          }}
-        />
-      </div>
-    </div>
-  );
+  const appDirName = (configOptions.namespace || chart.name).toLowerCase().replace(/[^a-z0-9-]/g, "-");
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Editor toolbar */}
-      <div className="flex items-center justify-between px-4 sm:px-5 py-3 shrink-0 border-b border-border">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3 shrink-0 border-b border-border">
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={onBack}
@@ -394,203 +198,370 @@ export function StepValuesEditor({
           <span className="text-border shrink-0">|</span>
           <div className="min-w-0">
             <span className="text-base font-mono text-foreground truncate block">
-              {chart.name}/values.yaml
+              Configure
             </span>
             <span className="text-sm text-muted-foreground hidden sm:block">
-              Customize values for your deployment, then generate your config
+              {toolbarSubtitle}
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0 ml-4">
-          <button
-            onClick={() => setShowEditor(!showEditor)}
-            className={cn(
-              "hidden md:flex items-center gap-1.5 px-3 h-9 rounded-lg border text-sm font-medium transition-colors",
-              showEditor
-                ? "border-primary/40 bg-primary/10 text-primary"
-                : "border-border bg-card text-foreground hover:bg-muted"
-            )}
-          >
-            {showEditor ? <EyeOff className="w-3.5 h-3.5" /> : <Code2 className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{showEditor ? "Hide editor" : "Show editor"}</span>
-          </button>
-          <button
-            onClick={onNext}
-            className="flex items-center gap-1.5 px-4 sm:px-5 h-9 rounded-lg bg-primary text-primary-foreground text-base font-medium hover:bg-primary/90 transition-colors shrink-0"
-          >
-            Generate config
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
       </div>
 
-      {/* Desktop: resizable layout — Configure | Editor | Variables */}
-      <div className="hidden md:flex flex-1 min-h-0 bg-card">
-        <ResizablePanelGroup
-          direction="horizontal"
-          key={`${showEditor ? "e" : ""}${showVariables ? "v" : ""}`}
-        >
-          <ResizablePanel defaultSize={showEditor ? 22 : 50} minSize={16}>
-            <div className="flex flex-col h-full">
-              <div className="flex items-center px-4 h-10 border-b border-border bg-muted/20 shrink-0">
-                <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Configure
-                </span>
+      {/* Main content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+
+          {/* Row 1: Primary configuration tiles */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {/* Cloud Provider */}
+            <div className="bg-card rounded-xl border border-border p-5">
+              <div className="flex items-center gap-1.5 mb-3">
+                <h3 className="text-sm font-semibold text-foreground">Cloud Provider</h3>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[220px] text-xs leading-relaxed">
+                    The cloud where your customers' instances will run. Each install gets its own isolated infrastructure.
+                  </TooltipContent>
+                </Tooltip>
               </div>
-              <div className="flex-1 overflow-y-auto">
-                <div className="px-4 pt-3 pb-2">
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    Set your deployment target and infrastructure options. These settings control which Nuon config files are generated.
+              <div className="space-y-1">
+                {([["aws", "AWS (EKS)"], ["azure", "Azure (AKS)"]] as const).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2.5 px-2 py-2 rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+                    <input
+                      type="radio"
+                      name="cloudProvider"
+                      checked={configOptions.cloudProvider === value}
+                      onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { cloudProvider: value } })}
+                      className="accent-primary"
+                    />
+                    <span className="text-sm text-foreground">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Infrastructure Mode */}
+            <div className="bg-card rounded-xl border border-border p-5">
+              <div className="flex items-center gap-1.5 mb-3">
+                <h3 className="text-sm font-semibold text-foreground">Infrastructure Mode</h3>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[240px] text-xs leading-relaxed">
+                    Controls whether Nuon creates a new VPC for each install or deploys into one the customer provides.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <div className="space-y-1">
+                {([
+                  ["default", "Default", "New VPC, subnets, and cluster per install"],
+                  ["bring-vpc", "Bring own VPC", "Deploy into customer's existing VPC"],
+                ] as const).map(([value, label, desc]) => (
+                  <label key={value} className="flex flex-col px-2 py-2 rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="radio"
+                        name="infraMode"
+                        checked={configOptions.infraMode === value}
+                        onChange={() => dispatch({ type: "SET_CONFIG_OPTIONS", options: { infraMode: value } })}
+                        className="accent-primary"
+                      />
+                      <span className="text-sm text-foreground">{label}</span>
+                    </div>
+                    <span className="text-xs text-muted-foreground ml-[26px] mt-0.5">{desc}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Infrastructure Dependencies */}
+            <div className="bg-card rounded-xl border border-border p-5">
+              <div className="flex items-center gap-1.5 mb-1">
+                <h3 className="text-sm font-semibold text-foreground">Infrastructure Dependencies</h3>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent side="top" className="max-w-[260px] text-xs leading-relaxed">
+                    Cloud-managed services your app needs. Nuon provisions these in each customer's cloud account alongside your app.
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              {autoDetectedDeps.length > 0 && (
+                <p className="text-xs text-primary mb-2">
+                  {autoDetectedDeps.length} auto-detected — uncheck any you don't need
+                </p>
+              )}
+              {autoDetectedDeps.length === 0 && (
+                <p className="text-xs text-muted-foreground mb-2">
+                  Select managed services to provision per customer
+                </p>
+              )}
+              <div className="space-y-1">
+                {INFRA_DEP_OPTIONS.map((dep) => {
+                  const checked = configOptions.infraDeps.includes(dep.id);
+                  const isAutoDetected = autoDetectedDeps.includes(dep.id);
+                  return (
+                    <label key={dep.id} className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-muted/40 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleInfraDep(dep.id)}
+                        className="accent-primary"
+                      />
+                      <span className="text-sm text-foreground">{dep.label}</span>
+                      {isAutoDetected && (
+                        <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-auto">auto</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Row 2: Secondary configuration */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Namespace */}
+            <div className="bg-card rounded-xl border border-border p-5">
+              <h3 className="text-sm font-semibold text-foreground mb-1">Namespace</h3>
+              <p className="text-xs text-muted-foreground mb-3">
+                The Kubernetes namespace for your app in each customer's cluster.
+              </p>
+              <input
+                type="text"
+                value={configOptions.namespace}
+                onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { namespace: e.target.value } })}
+                placeholder={chart.name}
+                className="w-full h-9 px-3 text-sm bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+              />
+            </div>
+
+            {/* Config Repository */}
+            <div className="bg-card rounded-xl border border-border p-5">
+              <h3 className="text-sm font-semibold text-foreground mb-1">Config Repository</h3>
+              <p className="text-xs text-muted-foreground mb-3">
+                The GitHub repo where you'll store these files. Nuon syncs from this repo to deploy your app.
+                {!configOptions.configRepo && (
+                  <span className="text-muted-foreground/60"> Leave blank to fill in later.</span>
+                )}
+              </p>
+              <input
+                type="text"
+                value={configOptions.configRepo}
+                onChange={(e) => dispatch({ type: "SET_CONFIG_OPTIONS", options: { configRepo: e.target.value } })}
+                placeholder="your-org/your-repo"
+                className="w-full h-9 px-3 text-sm font-mono bg-background border border-border rounded-lg outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
+              />
+            </div>
+          </div>
+
+          {/* Row 3: Chart Source */}
+          <div className="bg-card rounded-xl border border-border p-5">
+            <div className="flex items-center gap-1.5 mb-1">
+              <h3 className="text-sm font-semibold text-foreground">Chart Source</h3>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="w-3.5 h-3.5 text-muted-foreground/60 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px] text-xs leading-relaxed">
+                  Controls where the Nuon runner fetches the Helm chart from at deploy time.
+                </TooltipContent>
+              </Tooltip>
+            </div>
+
+            {helmRepoLoading ? (
+              <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Looking up chart on ArtifactHub...
+              </div>
+            ) : configOptions.chartSource.type === "helm_repo" ? (
+              <>
+                {/* Helm repo match — clean confirmation */}
+                <div className="mt-2 rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm text-foreground">
+                    <ExternalLink className="w-3.5 h-3.5 text-primary shrink-0" />
+                    <span>
+                      Chart will be pulled from{" "}
+                      <code className="font-mono text-xs bg-muted/60 px-1.5 py-0.5 rounded">
+                        {configOptions.chartSource.match.repoUrl}
+                      </code>
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5 ml-[22px]">
+                    {configOptions.chartSource.match.name} v{configOptions.chartSource.match.version} — from {configOptions.chartSource.match.repoName}
                   </p>
                 </div>
-                {configureContent}
-              </div>
-            </div>
-          </ResizablePanel>
 
-          {showEditor && (
-            <>
-              <ResizableHandle />
-              <ResizablePanel
-                defaultSize={showVariables ? 56 : 78}
-                minSize={30}
-              >
-                <div className="flex flex-col h-full border-l border-border">
-                  <div className="flex-1 min-h-0 relative" ref={editorContainerRef}>
-                    <Editor
-                      defaultLanguage="yaml"
-                      value={valuesYaml}
-                      onChange={(value) =>
-                        dispatch({ type: "SET_EDITED_VALUES", yaml: value || "" })
-                      }
-                      theme={theme === "dark" ? "vs-dark" : "vs"}
-                      onMount={handleEditorMount}
-                      options={{
-                        minimap: { enabled: false },
-                        fontSize: 14,
-                        fontFamily: "'Hack', monospace",
-                        lineNumbers: "on",
-                        scrollBeyondLastLine: false,
-                        padding: { top: 12 },
-                        wordWrap: "on",
-                        renderLineHighlight: "line",
-                        overviewRulerLanes: 0,
-                        hideCursorInOverviewRuler: true,
-                        scrollbar: {
-                          verticalScrollbarSize: 6,
-                          horizontalScrollbarSize: 6,
-                        },
-                      }}
-                    />
-                    {editorCanScroll && (
-                      <div className="absolute bottom-0 left-0 right-3 h-10 bg-gradient-to-t from-[var(--vscode-editor-background,hsl(var(--card)))] to-transparent pointer-events-none z-10" />
-                    )}
-                    {hasSelection && popoverPos && (
-                      <div
-                        className="absolute z-50 bg-card border border-border rounded-lg shadow-lg p-2 flex items-center gap-2"
-                        style={{ top: popoverPos.top, left: Math.max(8, popoverPos.left) }}
-                      >
-                        <span className="text-[11px] text-muted-foreground whitespace-nowrap">Make input:</span>
-                        <input
-                          ref={inputRef}
-                          value={inputName}
-                          onChange={(e) => setInputName(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && confirmMakeInput()}
-                          placeholder="input_name"
-                          className="h-6 w-28 px-2 text-xs font-mono bg-background border border-border rounded-md outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 transition-all"
-                        />
-                        <button
-                          onClick={confirmMakeInput}
-                          disabled={!inputName.trim()}
-                          className="px-2.5 h-6 text-[11px] font-medium rounded-md bg-primary text-primary-foreground disabled:opacity-30 hover:bg-primary/90 transition-colors shrink-0"
-                        >
-                          Replace
-                        </button>
+                {/* Advanced options disclosure */}
+                <button
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ChevronDown className={cn("w-3 h-3 transition-transform", showAdvanced && "rotate-180")} />
+                  Advanced options
+                </button>
+                {showAdvanced && (
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <label className={cn(
+                      "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                      "border-border hover:bg-muted/40"
+                    )}>
+                      <input
+                        type="radio"
+                        name="chartSourceAlt"
+                        checked={false}
+                        onChange={() => setChartSource({ type: "upstream_repo" })}
+                        className="accent-primary mt-0.5"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-foreground">Upstream repo</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Clone from <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+                        </p>
                       </div>
+                    </label>
+                    <label className={cn(
+                      "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                      "border-border hover:bg-muted/40"
+                    )}>
+                      <input
+                        type="radio"
+                        name="chartSourceAlt"
+                        checked={false}
+                        onChange={() => setChartSource({ type: "bundle" })}
+                        className="accent-primary mt-0.5"
+                      />
+                      <div>
+                        <span className="text-sm font-medium text-foreground">Bundle into config repo</span>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Include chart files in the ZIP
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                {/* No ArtifactHub match — show fallback notice + toggle */}
+                {bestMatch === null && helmRepoMatches.length === 0 && !helmRepoLoading && (
+                  <p className="text-xs text-muted-foreground mb-3">
+                    {isMonorepo
+                      ? "This chart lives in a large repository. Bundling avoids slow build clones."
+                      : "No Helm repository found for this chart. Choose where the runner fetches it at deploy time."}
+                  </p>
+                )}
+                {bestMatch === null && helmRepoMatches.length > 0 && (
+                  <p className="text-xs text-muted-foreground mb-3">
+                    No exact Helm repository match found. Choose how to fetch the chart at deploy time.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={cn(
+                    "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                    configOptions.chartSource.type === "upstream_repo" ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+                  )}>
+                    <input
+                      type="radio"
+                      name="chartSource"
+                      checked={configOptions.chartSource.type === "upstream_repo"}
+                      onChange={() => setChartSource({ type: "upstream_repo" })}
+                      className="accent-primary mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-foreground">Upstream repo</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Runner clones <code className="font-mono text-xs bg-muted/60 px-1 py-0.5 rounded">{repo.full_name}</code>
+                      </p>
+                    </div>
+                  </label>
+                  <label className={cn(
+                    "flex items-start gap-2.5 px-3 py-3 rounded-lg border cursor-pointer transition-colors",
+                    configOptions.chartSource.type === "bundle" ? "border-primary/40 bg-primary/5" : "border-border hover:bg-muted/40"
+                  )}>
+                    <input
+                      type="radio"
+                      name="chartSource"
+                      checked={configOptions.chartSource.type === "bundle"}
+                      onChange={() => setChartSource({ type: "bundle" })}
+                      className="accent-primary mt-0.5"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-foreground">
+                        Bundle into config repo
+                        {isMonorepo && (
+                          <span className="text-[10px] text-primary bg-primary/10 px-1.5 py-0.5 rounded ml-2">recommended</span>
+                        )}
+                      </span>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Chart files included in the ZIP — runner clones your config repo
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              </>
+            )}
+            {chartFilesLoading && (
+              <div className="flex items-center gap-2 mt-3 text-xs text-muted-foreground">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Fetching chart files...
+              </div>
+            )}
+            {configOptions.chartSource.type === "bundle" && chartFiles.length > 0 && !chartFilesLoading && (
+              <p className="text-xs text-primary mt-3">
+                {chartFiles.length} chart file(s) will be bundled
+              </p>
+            )}
+          </div>
+
+          {/* Generate CTA */}
+          <div className="flex justify-end">
+            <button
+              onClick={() => {
+                trackEvent("generate_config_clicked", {
+                  cloud_provider: configOptions.cloudProvider,
+                  chart_source_type: configOptions.chartSource.type,
+                  infra_deps_count: configOptions.infraDeps.length,
+                });
+                onNext();
+              }}
+              className="flex items-center gap-2 px-6 h-11 rounded-xl bg-primary text-primary-foreground text-base font-semibold hover:bg-primary/90 transition-colors shadow-sm"
+            >
+              Generate config
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Will Generate summary */}
+          <div className="rounded-xl border border-border bg-muted/20 p-5">
+            <h3 className="text-sm font-semibold text-foreground mb-4">What you'll get</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5">
+              {summaryItems.map((item) => (
+                <div key={item.label} className="flex items-start gap-2.5">
+                  <div className="mt-0.5 shrink-0">
+                    {item.label.includes("/") || item.label.includes("action") ? (
+                      <Folder className="w-3.5 h-3.5 text-primary/60" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-primary/60" />
                     )}
                   </div>
-                </div>
-              </ResizablePanel>
-            </>
-          )}
-
-          <ResizableHandle />
-
-          {showVariables ? (
-            <ResizablePanel defaultSize={22} minSize={14}>
-              <div className="flex flex-col h-full border-l border-border">
-                <div className="flex items-center justify-between px-4 h-10 border-b border-border bg-muted/20 shrink-0">
-                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                    Variables
-                  </span>
-                  <button
-                    onClick={() => setShowVariables(false)}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                    title="Collapse variables"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                  <div className="px-4 pt-3 pb-2">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Click to copy a template variable, or use Insert to add it at the cursor position in the editor.
-                    </p>
+                  <div className="min-w-0">
+                    <span className="text-sm font-medium text-foreground font-mono">{item.label}</span>
+                    <p className="text-xs text-muted-foreground mt-0.5">{item.desc}</p>
                   </div>
-                  {variablesContent}
                 </div>
-              </div>
-            </ResizablePanel>
-          ) : (
-            <ResizablePanel defaultSize={2} minSize={2} maxSize={2}>
-              <button
-                onClick={() => setShowVariables(true)}
-                className="h-full w-full flex items-center justify-center border-l border-border bg-muted/20 hover:bg-muted/40 transition-colors"
-                title="Expand variables"
-              >
-                <ChevronLeft className="w-3.5 h-3.5 text-muted-foreground" />
-              </button>
-            </ResizablePanel>
-          )}
-        </ResizablePanelGroup>
-      </div>
-
-      {/* Mobile: stacked layout */}
-      <div className="flex flex-col md:hidden flex-1 min-h-0">
-        <div className="flex-1 min-h-[250px] bg-card">
-          {mobileEditorPanel}
-        </div>
-
-        {/* Collapsible: Configure */}
-        <div className="border-t border-border bg-card">
-          <button
-            onClick={() => setMobileSection(mobileSection === "configure" ? null : "configure")}
-            className="w-full flex items-center justify-between px-4 h-10 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/20"
-          >
-            Configure
-            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "configure" && "rotate-180")} />
-          </button>
-          {mobileSection === "configure" && (
-            <div className="max-h-[350px] overflow-y-auto border-t border-border">
-              {configureContent}
+              ))}
             </div>
-          )}
-        </div>
-
-        {/* Collapsible: Template Variables */}
-        <div className="border-t border-border bg-card">
-          <button
-            onClick={() => setMobileSection(mobileSection === "variables" ? null : "variables")}
-            className="w-full flex items-center justify-between px-4 h-10 text-xs font-medium text-muted-foreground uppercase tracking-wider bg-muted/20"
-          >
-            Variables
-            <ChevronDown className={cn("w-3.5 h-3.5 text-muted-foreground transition-transform", mobileSection === "variables" && "rotate-180")} />
-          </button>
-          {mobileSection === "variables" && (
-            <div className="max-h-[250px] overflow-y-auto border-t border-border">
-              {variablesContent}
+            <div className="mt-4 pt-3 border-t border-border/60">
+              <p className="text-xs text-muted-foreground">
+                Files will be packaged as <span className="font-mono font-medium text-foreground">{appDirName}/</span> — ready to push to GitHub and sync with Nuon.
+              </p>
             </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

@@ -1,4 +1,5 @@
-import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency } from "./types";
+import type { HelmChart, GeneratedFile, ConfigOptions, ChartDependency, ChartFile, ChartSource } from "./types";
+import yaml from "js-yaml";
 
 // ---------------------------------------------------------------------------
 // Nuon template variables for the sidebar
@@ -48,8 +49,6 @@ export const KNOWN_INFRA_DEPS: Record<string, { component: string; engine: strin
   minio: { component: "s3", engine: null, label: "S3-compatible Storage" },
 };
 
-const PASSWORD_PATTERN = /^(\s*)(password|adminPassword|admin-password|auth\.password|postgresqlPassword|postgresPassword|rootPassword|auth\.postgresPassword|auth\.adminPassword|repmgrPassword|srCheckPassword|mariadbPassword|mysqlPassword|redisPassword):\s*(.+)$/gm;
-
 export function detectInfraDeps(dependencies: ChartDependency[]): string[] {
   const detected: string[] = [];
   for (const dep of dependencies) {
@@ -69,45 +68,219 @@ function esc(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-function rewritePasswords(values: string): string {
-  return values.replace(PASSWORD_PATTERN, (_, indent, key) =>
-    `${indent}${key}: "{{ .nuon.inputs.inputs.admin_password }}"`
-  );
+/**
+ * Resolve a dot-separated path against a nested object.
+ * Returns undefined if any segment is missing or hits a non-object.
+ */
+function resolveValuePath(
+  obj: Record<string, unknown>,
+  dotPath: string,
+): unknown {
+  const parts = dotPath.split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current == null || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
 }
 
-function stripConflictingKeys(values: string, keysToStrip: string[]): string {
-  const lines = values.split("\n");
-  const result: string[] = [];
-  let skipping = false;
+/**
+ * Replace non-Nuon Go template expressions in a YAML string.
+ *
+ * - {{ .Values.some.path }}  → resolved from valuesObj, or stripped
+ * - {{ .Values.x | default "y" }} → resolved, with "y" as fallback
+ * - {{ .Chart.* }}, {{ .Release.* }} → stripped
+ * - {{ include/template ... }} → stripped
+ * - {{ if/else/end/range/with }} → stripped
+ * - {{ .nuon.* }} → left intact
+ */
+export function sanitizeGoTemplates(
+  yamlContent: string,
+  valuesObj: Record<string, unknown>,
+): string {
+  const GO_TEMPLATE_RE = /\{\{-?\s*(.*?)\s*-?\}\}/g;
 
-  for (const line of lines) {
-    const stripped = line.trim();
-    if (stripped && !stripped.startsWith("#") && !line.startsWith(" ") && !line.startsWith("\t")) {
-      const keyName = stripped.includes(":") ? stripped.split(":")[0].trim() : "";
-      if (keysToStrip.includes(keyName)) {
-        skipping = true;
-        result.push(`# [${keyName}: overridden by Nuon wiring above]`);
-        continue;
-      } else {
-        skipping = false;
-      }
+  return yamlContent.replace(GO_TEMPLATE_RE, (fullMatch, innerExpr: string) => {
+    const expr = innerExpr.trim();
+
+    // Preserve all .nuon.* expressions (including "index .nuon.*")
+    if (expr.startsWith(".nuon.") || expr.startsWith("index .nuon.")) {
+      return fullMatch;
     }
 
-    if (skipping) {
-      if (!stripped || line.startsWith(" ") || line.startsWith("\t") || stripped.startsWith("#")) {
-        continue;
-      } else {
-        skipping = false;
+    // Handle .Values.* expressions — resolve from valuesObj
+    const valuesMatch = expr.match(/^\.Values\.(\S+?)(?:\s*\|.*)?$/);
+    if (valuesMatch) {
+      const path = valuesMatch[1];
+      const resolved = resolveValuePath(valuesObj, path);
+
+      if (resolved !== undefined && resolved !== null && typeof resolved !== "object") {
+        return String(resolved);
       }
+
+      // Try | default "..." fallback
+      const defaultMatch = expr.match(/\|\s*default\s+"([^"]*)"/);
+      if (defaultMatch) {
+        return defaultMatch[1];
+      }
+      const defaultMatchSingle = expr.match(/\|\s*default\s+'([^']*)'/);
+      if (defaultMatchSingle) {
+        return defaultMatchSingle[1];
+      }
+
+      // Unresolvable — empty string
+      return "";
     }
-    result.push(line);
+
+    // Handle `index .Values.* "key"` expressions
+    const indexValuesMatch = expr.match(/^index\s+\.Values\.(\S+)\s+"([^"]+)"/);
+    if (indexValuesMatch) {
+      const parent = resolveValuePath(valuesObj, indexValuesMatch[1]);
+      if (parent && typeof parent === "object" && !Array.isArray(parent)) {
+        const val = (parent as Record<string, unknown>)[indexValuesMatch[2]];
+        if (val !== undefined && val !== null && typeof val !== "object") {
+          return String(val);
+        }
+      }
+      return "";
+    }
+
+    // All other non-Nuon expressions: strip
+    return "";
+  });
+}
+
+// ---------------------------------------------------------------------------
+// YAML analysis helpers for minimal override generation
+// ---------------------------------------------------------------------------
+
+const INFRA_KEY_PATTERNS: Record<string, RegExp> = {
+  postgresql: /^(postgresql|postgres|postgresql-ha)$/i,
+  mysql: /^(mysql|mariadb|mysql-ha)$/i,
+  redis: /^(redis|redis-cluster|redis-master|valkey|valkey-cluster)$/i,
+  memcached: /^(memcached)$/i,
+  minio: /^(minio|s3)$/i,
+};
+
+interface IngressInfo {
+  type: "flat" | "hosts-array";
+  key: string;
+}
+
+interface PasswordField {
+  path: string[];
+}
+
+function findInfraKeys(
+  parsed: Record<string, unknown>,
+  infraDeps: string[],
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const topKeys = Object.keys(parsed);
+  for (const dep of infraDeps) {
+    const pattern = INFRA_KEY_PATTERNS[dep];
+    if (!pattern) continue;
+    const matches = topKeys.filter((k) => pattern.test(k));
+    if (matches.length > 0) result.set(dep, matches);
   }
-  return result.join("\n");
+  return result;
+}
+
+function detectIngressStructure(
+  parsed: Record<string, unknown>,
+): IngressInfo | null {
+  const ingress = parsed.ingress as Record<string, unknown> | undefined;
+  if (ingress && typeof ingress === "object") {
+    if (Array.isArray(ingress.hosts))
+      return { type: "hosts-array", key: "ingress" };
+    if ("hostname" in ingress) return { type: "flat", key: "ingress" };
+    return { type: "hosts-array", key: "ingress" };
+  }
+  for (const key of Object.keys(parsed)) {
+    const val = parsed[key] as Record<string, unknown> | undefined;
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      const inner = val.ingress as Record<string, unknown> | undefined;
+      if (inner && typeof inner === "object") {
+        if (Array.isArray(inner.hosts))
+          return { type: "hosts-array", key: `${key}.ingress` };
+        if ("hostname" in inner)
+          return { type: "flat", key: `${key}.ingress` };
+      }
+    }
+  }
+  return null;
+}
+
+function findPasswordPaths(
+  obj: unknown,
+  path: string[] = [],
+): PasswordField[] {
+  const results: PasswordField[] = [];
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return results;
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const currentPath = [...path, key];
+    if (typeof value === "string" || typeof value === "number") {
+      if (key.toLowerCase().includes("password")) {
+        results.push({ path: currentPath });
+      }
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      results.push(...findPasswordPaths(value, currentPath));
+    }
+  }
+  return results;
+}
+
+function emitNestedYaml(
+  keyPath: string[],
+  value: string,
+  indent: number = 0,
+): string {
+  const prefix = "  ".repeat(indent);
+  if (keyPath.length === 1) return `${prefix}${keyPath[0]}: ${value}`;
+  return `${prefix}${keyPath[0]}:\n${emitNestedYaml(keyPath.slice(1), value, indent + 1)}`;
+}
+
+function emitPasswordOverrides(fields: PasswordField[]): string {
+  if (fields.length === 0) return "";
+  const lines: string[] = [];
+  const tree: Record<string, unknown> = {};
+  for (const field of fields) {
+    let node: Record<string, unknown> = tree;
+    for (let i = 0; i < field.path.length - 1; i++) {
+      if (!(field.path[i] in node))
+        node[field.path[i]] = {} as Record<string, unknown>;
+      node = node[field.path[i]] as Record<string, unknown>;
+    }
+    node[field.path[field.path.length - 1]] =
+      '"{{ .nuon.inputs.inputs.admin_password }}"';
+  }
+  function serialize(obj: Record<string, unknown>, indent: number): void {
+    for (const [key, val] of Object.entries(obj)) {
+      const prefix = "  ".repeat(indent);
+      if (typeof val === "string") {
+        lines.push(`${prefix}${key}: ${val}`);
+      } else {
+        lines.push(`${prefix}${key}:`);
+        serialize(val as Record<string, unknown>, indent + 1);
+      }
+    }
+  }
+  serialize(tree, 0);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
 // Individual file generators
 // ---------------------------------------------------------------------------
+
+/** Sanitize a string for use as a Nuon component name (lowercase alphanumeric, underscores, dots). */
+function toComponentName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9_.{}]/g, "_");
+}
 
 function generateMetadata(chartName: string, description: string): GeneratedFile {
   const desc = description || `Nuon BYOC config for ${chartName}`;
@@ -121,9 +294,9 @@ display_name = "${esc(chartName)}"`,
   };
 }
 
-function generateSandbox(cloudProvider: string): GeneratedFile {
+function generateSandbox(cloudProvider: string, enableDns: boolean): GeneratedFile[] {
   if (cloudProvider === "azure") {
-    return {
+    return [{
       filename: "sandbox.toml",
       language: "toml",
       content: `# sandbox
@@ -134,20 +307,41 @@ terraform_version = "1.11.3"
 repo = "nuonco/azure-aks-sandbox"
 branch = "main"
 directory = "."`,
-    };
+    }];
   }
-  return {
-    filename: "sandbox.toml",
-    language: "toml",
-    content: `# sandbox
+
+  const varsLines: string[] = [];
+  if (enableDns) {
+    varsLines.push('enable_nuon_dns = "true"');
+  }
+  const varsBlock = varsLines.length > 0
+    ? `\n[vars]\n${varsLines.join("\n")}\n`
+    : "";
+
+  return [
+    {
+      filename: "sandbox.toml",
+      language: "toml",
+      content: `# sandbox
 name = "eks"
 terraform_version = "1.11.3"
 
 [public_repo]
 repo = "nuonco/aws-eks-sandbox"
 branch = "main"
-directory = "."`,
-  };
+directory = "."
+${varsBlock}
+# Override maintenance ClusterRole to allow reading secrets
+# (required by Helm charts that use common.secrets.lookup)
+[[var_file]]
+contents = "./sandbox.tfvars"`,
+    },
+    {
+      filename: "sandbox.tfvars",
+      language: "hcl",
+      content: MAINTENANCE_RBAC_TFVARS,
+    },
+  ];
 }
 
 function generateRunner(cloudProvider: string): GeneratedFile {
@@ -200,6 +394,264 @@ const BOUNDARY_JSON = `{
     }
   ]
 }`;
+
+// Full maintenance ClusterRole RBAC rules override for aws-eks-sandbox.
+// Identical to the upstream defaults in nuonco/aws-eks-sandbox/values/k8s/maintenance_role.yaml
+// EXCEPT: "secrets" is added to the core-API get/list/watch rule so that Helm charts
+// using common.secrets.lookup (e.g. Bitnami nginx) can read existing secrets during
+// sync-and-plan without hitting a 403 Forbidden.
+const MAINTENANCE_RBAC_TFVARS = `maintenance_cluster_role_rules_override = [
+  # --- cert-manager: mutate ---
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates", "certificaterequests", "issuers"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates/status"]
+    verbs     = ["update"]
+  },
+  {
+    apiGroups = ["acme.cert-manager.io"]
+    resources = ["challenges", "orders"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- cert-manager: read ---
+  {
+    apiGroups = ["cert-manager.io"]
+    resources = ["certificates", "certificaterequests", "issuers"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["acme.cert-manager.io"]
+    resources = ["challenges", "orders"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: read (pods/exec, proxy, etc.) ---
+  # MODIFIED: added "secrets" so Helm lookups (e.g. common.secrets.lookup) work
+  {
+    apiGroups = [""]
+    resources = ["pods/attach", "pods/exec", "pods/portforward", "pods/proxy", "secrets", "services/proxy"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: impersonate ---
+  {
+    apiGroups = [""]
+    resources = ["serviceaccounts"]
+    verbs     = ["impersonate"]
+  },
+
+  # --- core API: mutate pods ---
+  {
+    apiGroups = [""]
+    resources = ["pods", "pods/attach", "pods/exec", "pods/portforward", "pods/proxy"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["pods/eviction"]
+    verbs     = ["create"]
+  },
+
+  # --- core API: mutate other resources ---
+  {
+    apiGroups = [""]
+    resources = ["configmaps", "events", "persistentvolumeclaims", "replicationcontrollers", "replicationcontrollers/scale", "secrets", "serviceaccounts", "services", "services/proxy"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["serviceaccounts/token"]
+    verbs     = ["create"]
+  },
+
+  # --- apps: mutate ---
+  {
+    apiGroups = ["apps"]
+    resources = ["daemonsets", "deployments", "deployments/rollback", "deployments/scale", "replicasets", "replicasets/scale", "statefulsets", "statefulsets/scale"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- autoscaling: mutate ---
+  {
+    apiGroups = ["autoscaling"]
+    resources = ["horizontalpodautoscalers"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- batch: mutate ---
+  {
+    apiGroups = ["batch"]
+    resources = ["cronjobs", "jobs"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- extensions: mutate ---
+  {
+    apiGroups = ["extensions"]
+    resources = ["daemonsets", "deployments", "deployments/rollback", "deployments/scale", "ingresses", "networkpolicies", "replicasets", "replicasets/scale", "replicationcontrollers/scale"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- policy: mutate ---
+  {
+    apiGroups = ["policy"]
+    resources = ["poddisruptionbudgets"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- networking: mutate ---
+  {
+    apiGroups = ["networking.k8s.io"]
+    resources = ["ingresses", "networkpolicies"]
+    verbs     = ["create", "delete", "deletecollection", "patch", "update"]
+  },
+
+  # --- coordination: full ---
+  {
+    apiGroups = ["coordination.k8s.io"]
+    resources = ["leases"]
+    verbs     = ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  },
+
+  # --- metrics: read ---
+  {
+    apiGroups = ["metrics.k8s.io"]
+    resources = ["pods", "nodes"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- kyverno: read ---
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["cleanuppolicies", "clustercleanuppolicies", "policies", "clusterpolicies"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["wgpolicyk8s.io"]
+    resources = ["policyreports", "clusterpolicyreports"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["reports.kyverno.io"]
+    resources = ["ephemeralreports", "clusterephemeralreports"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["updaterequests"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: read common resources ---
+  {
+    apiGroups = [""]
+    resources = ["configmaps", "endpoints", "persistentvolumeclaims", "persistentvolumeclaims/status", "pods", "replicationcontrollers", "replicationcontrollers/scale", "serviceaccounts", "services", "services/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+  {
+    apiGroups = [""]
+    resources = ["bindings", "events", "limitranges", "namespaces/status", "pods/log", "pods/status", "replicationcontrollers/status", "resourcequotas", "resourcequotas/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- core API: namespaces (full) ---
+  {
+    apiGroups = [""]
+    resources = ["namespaces"]
+    verbs     = ["*"]
+  },
+
+  # --- discovery: read ---
+  {
+    apiGroups = ["discovery.k8s.io"]
+    resources = ["endpointslices"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- apps: read ---
+  {
+    apiGroups = ["apps"]
+    resources = ["controllerrevisions", "daemonsets", "daemonsets/status", "deployments", "deployments/scale", "deployments/status", "replicasets", "replicasets/scale", "replicasets/status", "statefulsets", "statefulsets/scale", "statefulsets/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- autoscaling: read ---
+  {
+    apiGroups = ["autoscaling"]
+    resources = ["horizontalpodautoscalers", "horizontalpodautoscalers/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- batch: read ---
+  {
+    apiGroups = ["batch"]
+    resources = ["cronjobs", "cronjobs/status", "jobs", "jobs/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- extensions: read ---
+  {
+    apiGroups = ["extensions"]
+    resources = ["daemonsets", "daemonsets/status", "deployments", "deployments/scale", "deployments/status", "ingresses", "ingresses/status", "networkpolicies", "replicasets", "replicasets/scale", "replicasets/status", "replicationcontrollers/scale"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- policy: read ---
+  {
+    apiGroups = ["policy"]
+    resources = ["poddisruptionbudgets", "poddisruptionbudgets/status"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- networking: read ---
+  {
+    apiGroups = ["networking.k8s.io"]
+    resources = ["ingresses", "ingresses/status", "networkpolicies"]
+    verbs     = ["get", "list", "watch"]
+  },
+
+  # --- kyverno: full ---
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["cleanuppolicies", "clustercleanuppolicies", "policies", "clusterpolicies"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["wgpolicyk8s.io"]
+    resources = ["policyreports", "clusterpolicyreports"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["reports.kyverno.io"]
+    resources = ["ephemeralreports", "clusterephemeralreports"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+  {
+    apiGroups = ["kyverno.io"]
+    resources = ["updaterequests"]
+    verbs     = ["create", "delete", "get", "list", "patch", "update", "watch"]
+  },
+
+  # --- authorization: create ---
+  {
+    apiGroups = ["authorization.k8s.io"]
+    resources = ["localsubjectaccessreviews"]
+    verbs     = ["create"]
+  },
+
+  # --- rbac: full ---
+  {
+    apiGroups = ["rbac.authorization.k8s.io"]
+    resources = ["rolebindings", "roles"]
+    verbs     = ["create", "delete", "deletecollection", "get", "list", "patch", "update", "watch"]
+  },
+]
+`;
 
 function generatePermissions(): GeneratedFile[] {
   const phases: [string, string][] = [
@@ -592,34 +1044,109 @@ function generateAppComponent(
   org: string,
   repo: string,
   directory: string,
-  branch: string,
+  _branch: string,
   namespace: string,
   depComponentNames: string[],
   componentNumber: number,
+  chartSource: ChartSource,
+  configRepo: string,
 ): GeneratedFile {
   const depLine = depComponentNames.length > 0
     ? `dependencies = [${depComponentNames.map((d) => `"${d}"`).join(", ")}]`
     : "# dependencies = []";
 
-  return {
-    filename: `components/${componentNumber}-${chartName}.toml`,
-    language: "toml",
-    content: `# helm
-name = "${esc(chartName)}"
+  const compName = toComponentName(chartName);
+  const valuesBlock = `\n[[values_file]]\ncontents = "./values/${esc(chartName)}/values.yaml"`;
+
+  if (chartSource.type === "helm_repo") {
+    const m = chartSource.match;
+    return {
+      filename: `components/${componentNumber}-${chartName}.toml`,
+      language: "toml",
+      content: `# helm
+name = "${esc(compName)}"
 type = "helm_chart"
 chart_name = "${esc(chartName)}"
 namespace = "${esc(namespace)}"
 storage_driver = "configmap"
 ${depLine}
 
-[public_repo]
-repo = "${esc(org)}/${esc(repo)}"
-directory = "${esc(directory)}"
-branch = "${esc(branch)}"
+[helm_repo]
+repo_url = "${esc(m.repoUrl)}"
+chart    = "${esc(m.name)}"
+version  = "${esc(m.version)}"
+${valuesBlock}`,
+    };
+  }
 
-[[values_file]]
-contents = "./values/${esc(chartName)}/values.yaml"`,
+  let repoRef: string;
+  let dirRef: string;
+  let todo = "";
+
+  if (chartSource.type === "bundle") {
+    repoRef = configRepo || "YOUR_ORG/YOUR_REPO";
+    dirRef = `components/chart/${chartName}`;
+    if (!configRepo) {
+      todo = `\n#\n# TODO: Update [public_repo] repo to point to the GitHub repo where you push this config.\n# The chart files are bundled under components/chart/${chartName}/`;
+    }
+  } else {
+    repoRef = `${org}/${repo}`;
+    dirRef = directory;
+  }
+
+  return {
+    filename: `components/${componentNumber}-${chartName}.toml`,
+    language: "toml",
+    content: `# helm
+name = "${esc(compName)}"
+type = "helm_chart"
+chart_name = "${esc(chartName)}"
+namespace = "${esc(namespace)}"
+storage_driver = "configmap"
+${depLine}${todo}
+
+[public_repo]
+repo = "${esc(repoRef)}"
+directory = "${esc(dirRef)}"
+branch = "main"
+${valuesBlock}`,
   };
+}
+
+function inferLanguage(path: string): string {
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".yaml") || lower.endsWith(".yml")) return "yaml";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".toml")) return "toml";
+  if (lower.endsWith(".tpl")) return "yaml";
+  return "plaintext";
+}
+
+// Only these extensions belong inside a Helm templates/ directory.
+// Anything else (CLAUDE.md, README.md, etc.) causes Helm to fail with
+// "YAML parse error … cannot unmarshal string into Go value".
+const HELM_TEMPLATE_EXTENSIONS = new Set([".yaml", ".yml", ".tpl", ".txt", ".json"]);
+
+function isValidTemplateFile(relativePath: string): boolean {
+  // Only filter files directly under or nested in a templates/ directory
+  const parts = relativePath.split("/");
+  const inTemplates = parts.some((p) => p === "templates");
+  if (!inTemplates) return true;
+  const ext = relativePath.slice(relativePath.lastIndexOf(".")).toLowerCase();
+  return HELM_TEMPLATE_EXTENSIONS.has(ext);
+}
+
+function generateBundledChartFiles(
+  chartName: string,
+  chartFiles: ChartFile[],
+): GeneratedFile[] {
+  return chartFiles
+    .filter((cf) => isValidTemplateFile(cf.relativePath))
+    .map((cf) => ({
+      filename: `components/chart/${chartName}/${cf.relativePath}`,
+      language: inferLanguage(cf.relativePath),
+      content: cf.content,
+    }));
 }
 
 function generateDbCredentialsAction(chartName: string, namespace: string): GeneratedFile {
@@ -654,108 +1181,328 @@ TARGET_NAMESPACE = "${esc(namespace)}"`,
   };
 }
 
-function generateValuesFile(
+/** Navigate a dot-separated path (e.g. "hub.ingress") into a nested object, creating missing keys. */
+function navigateToNestedObject(
+  obj: Record<string, unknown>,
+  dotPath: string,
+): Record<string, unknown> | null {
+  const parts = dotPath.split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) return null;
+    const rec = current as Record<string, unknown>;
+    if (!(part in rec)) rec[part] = {};
+    current = rec[part];
+  }
+  return current && typeof current === "object" && !Array.isArray(current)
+    ? (current as Record<string, unknown>)
+    : null;
+}
+
+/** Minimal override generator — used as fallback when no original values.yaml is available. */
+function generateMinimalValuesFile(
   chartName: string,
   originalValues: string | null,
   infraDeps: string[],
 ): GeneratedFile {
   const sections: string[] = [];
+  const HOSTNAME = "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}";
 
-  sections.push(`# =============================================================================
-# Nuon-templated values for ${chartName}
-# =============================================================================
-#
-# TODO: Review the sections below. Wire Nuon template variables to the
-# Helm values that should be configurable per customer install.
-#
-# Template variable docs: https://docs.nuon.co/configuration-files
-# =============================================================================`);
+  sections.push(
+    `# Nuon values override for ${chartName}`,
+    `# Docs: https://docs.nuon.co/configuration-files`,
+  );
+
+  let parsed: Record<string, unknown> = {};
+  if (originalValues) {
+    try {
+      const loaded = yaml.load(originalValues);
+      if (loaded && typeof loaded === "object") parsed = loaded as Record<string, unknown>;
+    } catch { /* fall through with empty parsed */ }
+  }
+
+  const infraKeyMap = findInfraKeys(parsed, infraDeps);
+  const disabledKeys = new Set<string>();
 
   const hasPg = infraDeps.includes("postgresql");
   const hasMysql = infraDeps.some((d) => ["mysql", "mariadb"].includes(d));
   const hasRedis = infraDeps.includes("redis");
 
+  // Disable bundled subcharts using actual key names from values.yaml
   if (hasPg) {
-    sections.push(`
-# --- PostgreSQL: disable bundled subchart, use Nuon-managed RDS ---
-postgresql:
-  enabled: false
-
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: {{ .nuon.components.rds.outputs.db_instance_port }}
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials — use the Kubernetes secret created by the
-  # db-credentials action, or reference inputs for username/password
-  # existingSecret: "${chartName}-db-credentials"
-  # existingSecretPasswordKey: "password"`);
+    const keys = infraKeyMap.get("postgresql") || ["postgresql"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalDatabase:",
+      `  host: "{{ .nuon.components.rds.outputs.address }}"`,
+      `  port: {{ .nuon.components.rds.outputs.db_instance_port }}`,
+      `  database: "{{ .nuon.inputs.inputs.db_name }}"`,
+      `  existingSecret: "${chartName}-db-credentials"`,
+      `  existingSecretPasswordKey: "password"`,
+    );
   }
 
   if (hasMysql) {
-    sections.push(`
-# --- MySQL: disable bundled subchart, use Nuon-managed RDS ---
-mysql:
-  enabled: false
-
-externalDatabase:
-  host: "{{ .nuon.components.rds.outputs.address }}"
-  port: 3306
-  database: "{{ .nuon.inputs.inputs.db_name }}"
-  # TODO: wire credentials from the db-credentials action`);
+    const keys = infraKeyMap.get("mysql") || ["mysql"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalDatabase:",
+      `  host: "{{ .nuon.components.rds.outputs.address }}"`,
+      `  port: 3306`,
+      `  database: "{{ .nuon.inputs.inputs.db_name }}"`,
+      `  existingSecret: "${chartName}-db-credentials"`,
+      `  existingSecretPasswordKey: "password"`,
+    );
   }
 
   if (hasRedis) {
-    sections.push(`
-# --- Redis: disable bundled subchart, use Nuon-managed ElastiCache ---
-redis:
-  enabled: false
-
-# TODO: wire external Redis connection using your chart's key structure
-# externalRedis:
-#   host: "{{ .nuon.components.elasticache.outputs.endpoint }}"
-#   port: 6379`);
+    const keys = infraKeyMap.get("redis") || ["redis"];
+    for (const k of keys) {
+      sections.push("", `${k}:`, `  enabled: false`);
+      disabledKeys.add(k);
+    }
+    sections.push(
+      "",
+      "externalRedis:",
+      `  host: "{{ .nuon.components.elasticache.outputs.endpoint }}"`,
+      `  port: 6379`,
+    );
   }
 
-  sections.push(`
-# --- Ingress ---
-ingress:
-  enabled: true
-  hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  annotations:
-    external-dns.alpha.kubernetes.io/hostname: "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}"
-  # TODO: Adapt the keys above to match your chart's ingress structure
-  # (e.g. ingress.hosts[0].host, service.ingress.hostname, etc.)`);
-
-  if (originalValues) {
-    const conflictingKeys = ["ingress"];
-    if (hasPg) conflictingKeys.push("postgresql", "externalDatabase");
-    if (hasMysql) conflictingKeys.push("mysql", "externalDatabase");
-    if (hasRedis) conflictingKeys.push("redis");
-
-    let rewritten = rewritePasswords(originalValues);
-    rewritten = stripConflictingKeys(rewritten, conflictingKeys);
-    sections.push(`
-# =============================================================================
-# Original values.yaml from ${chartName}
-#
-# Passwords have been automatically replaced with Nuon input variables.
-# Review and customize the remaining values. Replace static values with
-# Nuon template variables where customer-specific configuration is needed.
-#
-# See https://docs.nuon.co/configuration-files for template variable syntax.
-# =============================================================================
-
-${rewritten}`);
+  // Ingress — match the chart's actual structure
+  const ingressInfo = detectIngressStructure(parsed);
+  if (ingressInfo?.type === "flat") {
+    const parts = ingressInfo.key.split(".");
+    const inner = [
+      `enabled: true`,
+      `hostname: "${HOSTNAME}"`,
+      `annotations:`,
+      `  external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    ];
+    sections.push("", emitNestedYaml(parts, "", 0).replace(/:\s*$/, ":"));
+    for (const line of inner) sections.push(`${"  ".repeat(parts.length)}${line}`);
+  } else if (ingressInfo?.type === "hosts-array") {
+    const parts = ingressInfo.key.split(".");
+    const inner = [
+      `enabled: true`,
+      `hosts:`,
+      `  - host: "${HOSTNAME}"`,
+      `    paths:`,
+      `      - path: /`,
+      `        pathType: ImplementationSpecific`,
+      `annotations:`,
+      `  external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    ];
+    sections.push("", emitNestedYaml(parts, "", 0).replace(/:\s*$/, ":"));
+    for (const line of inner) sections.push(`${"  ".repeat(parts.length)}${line}`);
   } else {
-    sections.push(`
-# No values.yaml found in the chart source. Add your custom values below.
-`);
+    sections.push(
+      "",
+      "ingress:",
+      "  enabled: true",
+      `  hostname: "${HOSTNAME}"`,
+      "  annotations:",
+      `    external-dns.alpha.kubernetes.io/hostname: "${HOSTNAME}"`,
+    );
+  }
+
+  // Password overrides — skip fields under disabled subchart keys
+  const passwords = findPasswordPaths(parsed).filter(
+    (p) => !disabledKeys.has(p.path[0]),
+  );
+  if (passwords.length > 0) {
+    sections.push("");
+    sections.push(emitPasswordOverrides(passwords));
   }
 
   return {
     filename: `components/values/${chartName}/values.yaml`,
     language: "yaml",
     content: sections.join("\n"),
+  };
+}
+
+/**
+ * Full-file values generator: starts with the complete original values.yaml,
+ * applies Nuon modifications in-place, and appends infrastructure wiring.
+ * Falls back to minimal generation if no original values are available.
+ */
+export function generateValuesFile(
+  chartName: string,
+  originalValues: string | null,
+  infraDeps: string[],
+): GeneratedFile {
+  const HOSTNAME = "{{ .nuon.inputs.inputs.subdomain }}.{{ .nuon.install.sandbox.outputs.nuon_dns.public_domain.name }}";
+
+  // Parse original values
+  let parsed: Record<string, unknown> = {};
+  if (originalValues) {
+    try {
+      const loaded = yaml.load(originalValues);
+      if (loaded && typeof loaded === "object") parsed = loaded as Record<string, unknown>;
+    } catch { /* fall through */ }
+  }
+
+  // If no original values available, fall back to minimal generation
+  if (Object.keys(parsed).length === 0) {
+    return generateMinimalValuesFile(chartName, originalValues, infraDeps);
+  }
+
+  // Deep-clone the parsed object for in-place modification
+  const modified = JSON.parse(JSON.stringify(parsed)) as Record<string, unknown>;
+
+  const infraKeyMap = findInfraKeys(parsed, infraDeps);
+  const disabledKeys = new Set<string>();
+
+  // 1. Disable bundled subcharts
+  for (const [, keys] of infraKeyMap) {
+    for (const k of keys) {
+      if (modified[k] && typeof modified[k] === "object") {
+        (modified[k] as Record<string, unknown>).enabled = false;
+      } else {
+        modified[k] = { enabled: false };
+      }
+      disabledKeys.add(k);
+    }
+  }
+
+  // 2. Modify ingress in-place
+  const ingressInfo = detectIngressStructure(parsed);
+  if (ingressInfo) {
+    const ingress = navigateToNestedObject(modified, ingressInfo.key);
+    if (ingress) {
+      ingress.enabled = true;
+      if (ingressInfo.type === "flat") {
+        ingress.hostname = HOSTNAME;
+      } else {
+        // hosts-array: modify first entry or create new
+        if (Array.isArray(ingress.hosts) && ingress.hosts.length > 0) {
+          const first = ingress.hosts[0];
+          if (typeof first === "string") {
+            ingress.hosts[0] = HOSTNAME;
+          } else if (first && typeof first === "object") {
+            (first as Record<string, unknown>).host = HOSTNAME;
+          }
+        } else {
+          ingress.hosts = [
+            { host: HOSTNAME, paths: [{ path: "/", pathType: "ImplementationSpecific" }] },
+          ];
+        }
+      }
+      // Add external-dns annotation
+      if (!ingress.annotations || typeof ingress.annotations !== "object") {
+        ingress.annotations = {};
+      }
+      (ingress.annotations as Record<string, unknown>)["external-dns.alpha.kubernetes.io/hostname"] = HOSTNAME;
+    }
+  } else {
+    // No ingress found in original — add at top level
+    modified.ingress = {
+      enabled: true,
+      hostname: HOSTNAME,
+      annotations: { "external-dns.alpha.kubernetes.io/hostname": HOSTNAME },
+    };
+  }
+
+  // 3. Replace password fields (skip those under disabled subcharts)
+  const passwords = findPasswordPaths(parsed).filter((p) => !disabledKeys.has(p.path[0]));
+  for (const pw of passwords) {
+    let target: Record<string, unknown> = modified;
+    let found = true;
+    for (let i = 0; i < pw.path.length - 1; i++) {
+      const next = target[pw.path[i]];
+      if (!next || typeof next !== "object" || Array.isArray(next)) { found = false; break; }
+      target = next as Record<string, unknown>;
+    }
+    if (found) {
+      target[pw.path[pw.path.length - 1]] = "{{ .nuon.inputs.inputs.admin_password }}";
+    }
+  }
+
+  // 4. Remove externalDatabase/externalRedis from clone to avoid duplication
+  //    (they'll be appended as commented sections below)
+  const hasPg = infraDeps.includes("postgresql");
+  const hasMysql = infraDeps.some((d) => ["mysql", "mariadb"].includes(d));
+  const hasRedis = infraDeps.includes("redis");
+  const hasDb = hasPg || hasMysql;
+
+  if (hasDb) delete modified.externalDatabase;
+  if (hasRedis) delete modified.externalRedis;
+
+  // 5. Serialize with yaml.dump()
+  const dumpOpts = { lineWidth: -1, noRefs: true, quotingType: '"' as const, forceQuotes: false };
+  let yamlContent = yaml.dump(modified, dumpOpts);
+
+  // 5a. Sanitize non-Nuon Go template expressions that survived from the original chart
+  yamlContent = sanitizeGoTemplates(yamlContent, parsed);
+
+  // 6. Build final content
+  const lines: string[] = [
+    `# Nuon values override for ${chartName}`,
+    `# Full chart values with Nuon template variables applied in-place.`,
+    `# Docs: https://docs.nuon.co/configuration-files`,
+    ``,
+    yamlContent.trimEnd(),
+  ];
+
+  // 7. Append external service blocks
+  if (hasDb || hasRedis) {
+    lines.push("");
+    lines.push("# --- Infrastructure wiring added by bring-your-helm ---");
+    lines.push("# These connect your app to Nuon-managed cloud services.");
+    lines.push("# Adjust field names to match your chart's external service configuration.");
+  }
+
+  if (hasPg) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalDatabase: {
+        host: "{{ .nuon.components.rds.outputs.address }}",
+        port: "{{ .nuon.components.rds.outputs.db_instance_port }}",
+        database: "{{ .nuon.inputs.inputs.db_name }}",
+        existingSecret: `${chartName}-db-credentials`,
+        existingSecretPasswordKey: "password",
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  if (hasMysql && !hasPg) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalDatabase: {
+        host: "{{ .nuon.components.rds.outputs.address }}",
+        port: 3306,
+        database: "{{ .nuon.inputs.inputs.db_name }}",
+        existingSecret: `${chartName}-db-credentials`,
+        existingSecretPasswordKey: "password",
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  if (hasRedis) {
+    lines.push("");
+    lines.push(yaml.dump({
+      externalRedis: {
+        host: "{{ .nuon.components.elasticache.outputs.endpoint }}",
+        port: 6379,
+      },
+    }, dumpOpts).trimEnd());
+  }
+
+  lines.push("");
+
+  return {
+    filename: `components/values/${chartName}/values.yaml`,
+    language: "yaml",
+    content: lines.join("\n"),
   };
 }
 
@@ -768,32 +1515,45 @@ export function generateNuonConfig(
   chart: HelmChart,
   valuesYaml: string,
   options: ConfigOptions,
+  chartFiles: ChartFile[] = [],
 ): GeneratedFile[] {
   const chartName = chart.name || "app";
   const description = chart.description || `Nuon BYOC config for ${chartName}`;
   const ns = options.namespace || chartName;
   const provider = options.cloudProvider || "aws";
-  const infraMode = options.infraMode || "default";
   const repoRef = options.configRepo || "YOUR_ORG/YOUR_REPO";
   const [org, repo] = repoFullName.split("/");
   const branch = "main";
   const directory = chart.path || ".";
+  const chartSource = options.chartSource;
+  const shouldBundle = chartSource.type === "bundle" && chartFiles.length > 0;
 
   const autoDetected = detectInfraDeps(chart.dependencies || []);
   const allDeps = [...new Set([...autoDetected, ...options.infraDeps])];
+
+  // Detect ingress so sandbox can enable Nuon DNS (required for nuon_dns template vars)
+  let hasIngress = false;
+  if (valuesYaml) {
+    try {
+      const parsed = yaml.load(valuesYaml) as Record<string, unknown> | null;
+      if (parsed && typeof parsed === "object") {
+        hasIngress = detectIngressStructure(parsed) !== null;
+      }
+    } catch {
+      // values YAML parse failure — will be handled downstream
+    }
+  }
 
   const files: GeneratedFile[] = [];
 
   files.push(generateMetadata(chartName, description));
   files.push(generateInputs(chartName, allDeps));
 
-  if (infraMode !== "bring-cluster") {
-    files.push(generateSandbox(provider));
-    files.push(generateRunner(provider));
-    files.push(generateStack(chartName));
-    files.push(generateBreakGlass());
-    files.push(...generatePermissions());
-  }
+  files.push(...generateSandbox(provider, hasIngress));
+  files.push(generateRunner(provider));
+  files.push(generateStack(chartName));
+  files.push(generateBreakGlass());
+  files.push(...generatePermissions());
 
   const hasDb = allDeps.some((d) => ["postgresql", "mysql", "mariadb"].includes(d));
   const hasCache = allDeps.some((d) => ["redis", "memcached"].includes(d));
@@ -825,7 +1585,12 @@ export function generateNuonConfig(
   files.push(generateAppComponent(
     chartName, org, repo, directory, branch, ns,
     infraComponentNames, compNumber,
+    chartSource, repoRef,
   ));
+
+  if (shouldBundle) {
+    files.push(...generateBundledChartFiles(chartName, chartFiles));
+  }
 
   files.push(generateValuesFile(chartName, valuesYaml || null, allDeps));
 
@@ -834,4 +1599,95 @@ export function generateNuonConfig(
   }
 
   return files;
+}
+
+// ---------------------------------------------------------------------------
+// Config validation
+// ---------------------------------------------------------------------------
+
+export interface ValidationWarning {
+  severity: "error" | "warning";
+  message: string;
+  file?: string;
+}
+
+export function validateGeneratedConfig(
+  files: GeneratedFile[],
+  options: ConfigOptions,
+): ValidationWarning[] {
+  const warnings: ValidationWarning[] = [];
+
+  const hasInfraComponents = files.some(
+    (f) => f.filename.includes("-rds.toml") ||
+           f.filename.includes("-elasticache.toml") ||
+           f.filename.includes("-s3.toml"),
+  );
+
+  if (!options.configRepo && hasInfraComponents) {
+    // When using helm_repo, the chart component itself is fine — only infra Terraform has the placeholder
+    const severity = options.chartSource.type === "helm_repo" ? "warning" : "error";
+    warnings.push({
+      severity,
+      message: "Config repository not set — infrastructure Terraform components contain \"YOUR_ORG/YOUR_REPO\" placeholder. Update after pushing to GitHub.",
+    });
+  }
+
+  if (options.chartSource.type === "bundle" && !options.configRepo) {
+    warnings.push({
+      severity: "error",
+      message: "Config repository not set — the bundled helm chart component references \"YOUR_ORG/YOUR_REPO\"",
+    });
+  }
+
+  const helmToml = files.find(
+    (f) => f.filename.match(/components\/\d+-.*\.toml$/) && f.content.includes('type = "helm_chart"')
+  );
+  if (helmToml && options.chartSource.type === "upstream_repo") {
+    const repoMatch = helmToml.content.match(/repo = "(.+)"/);
+    const dirMatch = helmToml.content.match(/directory = "(.+)"/);
+    if (repoMatch && dirMatch && dirMatch[1] !== ".") {
+      warnings.push({
+        severity: "warning",
+        message: `Chart points at ${repoMatch[1]} subdirectory "${dirMatch[1]}". If this is a monorepo, cloning may time out. Consider using a Helm repository or bundling instead.`,
+        file: helmToml.filename,
+      });
+    }
+  }
+
+  const compNamePattern = /^name = "([^"]+)"/m;
+  const validCompName = /^[a-z0-9_.{}]+$/;
+  for (const file of files) {
+    if (!file.filename.match(/components\/\d+-.*\.toml$/)) continue;
+    const nameMatch = file.content.match(compNamePattern);
+    if (nameMatch && !validCompName.test(nameMatch[1])) {
+      warnings.push({
+        severity: "error",
+        message: `Component name "${nameMatch[1]}" contains invalid characters — only lowercase letters, numbers, underscores, dots, and curly braces are allowed`,
+        file: file.filename,
+      });
+    }
+  }
+
+  for (const file of files) {
+    if (!options.configRepo && file.content.includes("YOUR_ORG/YOUR_REPO")) continue;
+    const todoMatches = file.content.match(/# TODO/g);
+    if (todoMatches) {
+      warnings.push({
+        severity: "warning",
+        message: `${todoMatches.length} TODO item${todoMatches.length > 1 ? "s" : ""} to review`,
+        file: file.filename,
+      });
+    }
+  }
+
+  const valuesFile = files.find((f) => f.filename.endsWith("/values.yaml") && !f.filename.startsWith("components/chart/"));
+  if (valuesFile && !valuesFile.content.includes("Full chart values")) {
+    warnings.push({
+      severity: "warning",
+      message: "Values file was generated from scratch — the original values.yaml could not be loaded. This may be caused by GitHub API rate limiting. Try again in a few minutes.",
+      file: valuesFile.filename,
+    });
+  }
+
+  return warnings;
 }

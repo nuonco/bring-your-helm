@@ -64,6 +64,9 @@ const Index = () => {
             chart={state.selectedChart}
             valuesYaml={state.editedValuesYaml}
             configOptions={state.configOptions}
+            chartFiles={state.chartFiles}
+            helmRepoMatches={state.helmRepoMatches}
+            helmRepoLoading={state.helmRepoLoading}
             dispatch={dispatch}
             onNext={() => dispatch({ type: "SET_STEP", step: 3 })}
             onBack={() => dispatch({ type: "SET_STEP", step: 1 })}
@@ -75,6 +78,7 @@ const Index = () => {
             chart={state.selectedChart}
             valuesYaml={state.editedValuesYaml}
             configOptions={state.configOptions}
+            chartFiles={state.chartFiles}
             onBack={() => dispatch({ type: "SET_STEP", step: 2 })}
             onReset={reset}
             onGenerated={increment}
