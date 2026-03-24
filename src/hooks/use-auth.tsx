@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
 import { toast } from "sonner";
-import { trackEvent } from "@/lib/analytics";
+
 
 interface GitHubUser {
   login: string;
@@ -45,7 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (callbackToken) {
       localStorage.setItem(TOKEN_KEY, callbackToken);
       setToken(callbackToken);
-      trackEvent("sign_in_completed");
+
       // Strip auth params from URL
       params.delete("auth_token");
       const newUrl = params.toString()
