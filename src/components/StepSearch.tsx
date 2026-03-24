@@ -3,7 +3,7 @@ import { ArrowRight, Loader2, Star, Search, Plus, Package, ChevronDown, Cloud, D
 import { cn } from "@/lib/utils";
 import { searchRepos, parseRepoUrl, getRepoByFullName, getUserRepos, repoHasHelmChart } from "@/lib/github";
 import { useAuth } from "@/hooks/use-auth";
-import { trackEvent } from "@/lib/analytics";
+
 import type { GitHubRepo, WizardAction } from "@/lib/types";
 
 function GitHubIcon({ className }: { className?: string }) {
@@ -155,7 +155,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
   }, []);
 
   const selectRepo = (repo: GitHubRepo, subpath?: string, source?: string) => {
-    trackEvent("repo_selected", { repo_name: repo.full_name, source: source || "search" });
+
     dispatch({ type: "SET_REPO", repo, subpath });
     setShowResults(false);
     onNext();
@@ -319,7 +319,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
       {!isAuthenticated && isConfigured && (
         <div className="mb-8">
           <button
-            onClick={() => { trackEvent("sign_in_clicked", { source: "landing" }); signIn(); }}
+            onClick={() => { signIn(); }}
             className="w-full flex items-center gap-3 px-5 py-4 bg-card rounded-lg border border-border hover:border-muted-foreground/30 hover:bg-muted/30 transition-all group"
           >
             <GitHubIcon className="w-5 h-5 text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
@@ -606,7 +606,7 @@ export function StepSearch({ dispatch, onNext, configCount = 0 }: StepSearchProp
             {communityConfigs.map((config) => (
               <button
                 key={`${config.full_name}-${config.chart_name}`}
-                onClick={() => { trackEvent("repo_selected", { repo_name: config.full_name, source: "recent" }); resolveAndGo(config.html_url); }}
+                onClick={() => { resolveAndGo(config.html_url); }}
                 className="text-left px-5 py-4 bg-card hover:bg-muted/30 transition-all group flex items-start gap-3"
               >
                 <Package className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />

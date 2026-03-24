@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import { generateNuonConfig, validateGeneratedConfig, NUON_VARIABLES } from "@/lib/nuon";
-import { trackEvent } from "@/lib/analytics";
+
 import type { ValidationWarning } from "@/lib/nuon";
 import type { GitHubRepo, HelmChart, GeneratedFile, ConfigOptions, ChartFile } from "@/lib/types";
 import { useTheme } from "@/hooks/use-theme";
@@ -286,14 +286,14 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
     a.download = `${appDirName}-nuon-config.zip`;
     a.click();
     URL.revokeObjectURL(url);
-    trackEvent("download_zip", { chart_name: chart.name, file_count: files.length });
+
   }, [files, appDirName, chart.name]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(getFileContent(selectedFile));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    trackEvent("copy_file", { file_path: selectedFile.filename });
+
   };
 
   const handleDownloadFile = () => {
@@ -354,7 +354,6 @@ export function StepGenerate({ repo, chart, valuesYaml, configOptions, chartFile
             href="https://app.nuon.co?utm_source=bring-your-helm&utm_medium=referral&utm_content=deploy-button"
             target="_blank"
             rel="noopener noreferrer"
-            onClick={() => trackEvent("deploy_with_nuon", { chart_name: chart.name })}
             className="flex items-center gap-1.5 px-4 h-9 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-primary/90 transition-colors"
           >
             Deploy with Nuon
