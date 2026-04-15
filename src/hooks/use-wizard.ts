@@ -1,7 +1,7 @@
 import { useReducer, useCallback, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type { WizardState, WizardAction, ConfigOptions } from "@/lib/types";
-import { trackPageView } from "@/lib/analytics";
+
 
 const STEP_PATHS = ["/", "/select-chart", "/configure", "/generate"] as const;
 
@@ -76,8 +76,6 @@ export function useWizard() {
       navigate(targetPath, { replace: true });
     }
     if (state.step !== prevStepRef.current) {
-      const titles = ["Search", "Select Chart", "Configure", "Generate"];
-      trackPageView(targetPath, titles[state.step]);
       prevStepRef.current = state.step;
     }
   }, [state.step, navigate, location.pathname]);

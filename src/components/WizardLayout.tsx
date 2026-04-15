@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/hooks/use-theme";
 import { useAuth } from "@/hooks/use-auth";
-import { trackEvent } from "@/lib/analytics";
+
 import { Sun, Moon, Share2, BookOpen, Link, Check, LogOut } from "lucide-react";
 import { useState, useCallback, useRef, useEffect } from "react";
 
@@ -76,7 +76,7 @@ export function WizardLayout({
     } catch {
       /* clipboard not available */
     }
-    trackEvent("share_clicked", { method: "copy" });
+
     setShowShareMenu(false);
   }, []);
 
@@ -84,14 +84,14 @@ export function WizardLayout({
     const text = encodeURIComponent("Check out bring-your-helm — generate BYOC deployment configs from any Helm chart");
     const url = encodeURIComponent(window.location.href);
     window.open(`https://twitter.com/intent/tweet?text=${text}&url=${url}`, "_blank", "width=550,height=420");
-    trackEvent("share_clicked", { method: "twitter" });
+
     setShowShareMenu(false);
   }, []);
 
   const handleShareLinkedIn = useCallback(() => {
     const url = encodeURIComponent(window.location.href);
     window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${url}`, "_blank", "width=550,height=420");
-    trackEvent("share_clicked", { method: "linkedin" });
+
     setShowShareMenu(false);
   }, []);
 
@@ -173,7 +173,7 @@ export function WizardLayout({
             </div>
             {isConfigured && !isAuthenticated && (
               <button
-                onClick={() => { trackEvent("sign_in_clicked", { source: "header" }); signIn(); }}
+                onClick={() => { signIn(); }}
                 title="Sign in to access private repositories"
                 className="h-8 px-3 rounded-lg border border-border bg-card flex items-center gap-1.5 text-sm font-medium text-foreground hover:bg-muted transition-colors"
               >
